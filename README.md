@@ -2,7 +2,7 @@
 
 Stateless Cloudflare Worker. De Worker leest de bron bij elke aanvraag en slaat kalendergegevens niet op.
 
-Open de homepage voor het formulier of roep de API aan:
+Het formulier toont de URL van het xCal-resultaat en maximaal tien afspraken in de volgorde van de bronfeed. De API is ook rechtstreeks beschikbaar:
 
 ```text
 GET /convert?url=https%3A%2F%2Fexample.org%2Fcalendar.ics&to=Europe%2FAmsterdam

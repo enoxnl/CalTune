@@ -176,8 +176,8 @@ function componentXml(component, target) {
     (children ? element("components", children) : ""));
 }
 
-function toXcal(input, target) {
-  const contents = parseCalendar(input).map(calendar => componentXml(calendar, target)).join("");
+function toXcal(calendars, target) {
+  const contents = calendars.map(calendar => componentXml(calendar, target)).join("");
   return '<?xml version="1.0" encoding="UTF-8"?>\n<icalendar xmlns="urn:ietf:params:xml:ns:icalendar-2.0">' +
     contents + "</icalendar>\n";
 }
@@ -240,7 +240,39 @@ async function download(url, originHost) {
   throw new RequestError(502, "De bron gaf te veel of ongeldige omleidingen.");
 }
 
-const help = `<!doctype html>
+const attribute = value => xml(value).replace(/"/g, "&quot;");
+
+function previewTime(value) {
+  const [date, clock] = extended(value).split("T");
+  const [year, month, day] = date.split("-");
+  return `${day}-${month}-${year}${clock ? " " + clock.slice(0, 5) : " · hele dag"}`;
+}
+
+function previewResults(calendars, target, calendarUrl) {
+  const events = calendars.flatMap(calendar => calendar.children.filter(component => component.name === "vevent"))
+    .slice(0, 10);
+  const rows = events.map(event => {
+    const field = name => event.properties.find(property => property.name === name)?.value;
+    const title = xml(unescapeText(field("summary") || "Naamloze afspraak"));
+    const start = field("dtstart");
+    const end = field("dtend");
+    // An all-day DTEND is the first day after the event.
+    const endLabel = end && end.includes("T") ? `<span>Einde ${previewTime(end)}</span>` : "";
+    return `<li><strong>${title}</strong><div class="times">${start ? `<span>Begin ${previewTime(start)}</span>` : ""}
+      ${endLabel}</div></li>`;
+  }).join("");
+  return `<section aria-labelledby="result">
+<h2 id="result">Aangepaste kalender</h2>
+<label>Kalender-URL (xCal/XML)<input readonly spellcheck="false" value="${attribute(calendarUrl)}"></label>
+<p><a href="${attribute(calendarUrl)}">Open kalender-URL</a></p>
+<h3>Eerste afspraken</h3>
+<p>Tijdzone ${xml(target)}. Maximaal 10 afspraken in de volgorde van de bronfeed.</p>
+${rows ? `<ul class="events">${rows}</ul>` : "<p>De bronfeed bevat geen afspraken.</p>"}
+</section>`;
+}
+
+function page({ sourceUrl = "", target = "Europe/Amsterdam", result = "" } = {}) {
+  return `<!doctype html>
 <html lang="nl"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer"><title>FixiCal</title>
 <style>
@@ -249,15 +281,19 @@ main{max-width:40rem;margin:clamp(2rem,9vw,7rem) auto;padding:0 1rem}h1{font-siz
 form{display:grid;gap:1rem;padding:1.5rem;background:white;border:1px solid #cbd7e0;border-radius:1rem}
 label{display:grid;gap:.3rem;font-weight:600}input,button{font:inherit;border-radius:.45rem;padding:.65rem .8rem}
 input{width:100%;border:1px solid #758a9a;color:inherit}button{border:0;background:#145361;color:white;font-weight:700;cursor:pointer}
-code{overflow-wrap:anywhere}
+a{color:#145361;text-decoration-thickness:.1em;text-underline-offset:.15em}
+section{margin-top:1.5rem;padding:1.5rem;background:white;border:1px solid #cbd7e0;border-radius:1rem}
+section h2{margin-top:0}.events{margin:0;padding:0;list-style:none}
+.events li{padding:.8rem 0;border-top:1px solid #cbd7e0;overflow-wrap:anywhere}
+.times{display:flex;flex-wrap:wrap;gap:.25rem 1rem}
+p[role=alert]{padding:1rem;background:#fff4f1;color:#61231d;border-radius:.45rem}
 </style><main><h1>FixiCal</h1><p>Vervang de tijdzone van afspraken en behoud de kloktijden. Het resultaat is xCal (XML).</p>
-<form action="/convert" method="get">
-<label>Bron-URL<input name="url" required placeholder="https://…/kalender.ics"></label>
-<label>Doeltijdzone<input name="to" required value="Europe/Amsterdam"></label>
-<button>Open xCal</button></form>
-<p>API: <code>GET /convert?url=…&amp;to=…</code></p>
-<p>Afspraken die de hele dag duren behouden hun datum.</p>
-</main></html>`;
+<form action="/preview" method="get">
+<label>Bron-URL<input name="url" required value="${attribute(sourceUrl)}" placeholder="https://…/kalender.ics"></label>
+<label>Doeltijdzone<input name="to" required value="${attribute(target)}"></label>
+<button>Toon kalender en afspraken</button></form>
+${result}</main></html>`;
+}
 
 function reply(body, status, type, extra = {}) {
   return new Response(body, { status, headers: {
@@ -271,9 +307,18 @@ export default {
   async fetch(request) {
     const path = new URL(request.url);
     const plain = "text/plain; charset=utf-8";
+    const html = "text/html; charset=utf-8";
+    const preview = path.pathname === "/preview";
+    const form = {
+      sourceUrl: path.searchParams.get("url") || "",
+      target: path.searchParams.get("to") || "Europe/Amsterdam"
+    };
+    const failure = (message, status) => preview
+      ? reply(page({ ...form, result: `<p role="alert">${xml(message)}</p>` }), status, html)
+      : reply(message, status, plain);
     if (request.method !== "GET") return reply("Gebruik GET.", 405, plain, { Allow: "GET" });
-    if (path.pathname === "/" && !path.search) return reply(help, 200, "text/html; charset=utf-8");
-    if (!["/", "/convert"].includes(path.pathname)) return reply("Route niet gevonden.", 404, plain);
+    if (path.pathname === "/" && !path.search) return reply(page(), 200, html);
+    if (!["/", "/convert", "/preview"].includes(path.pathname)) return reply("Route niet gevonden.", 404, plain);
     try {
       const parameters = ["url", "to"].map(name => {
         const values = path.searchParams.getAll(name);
@@ -283,14 +328,19 @@ export default {
       const [sourceUrl, to] = parameters;
       const target = timeZone(to);
       const url = validateSource(sourceUrl, path.hostname);
-      const input = await download(url, path.hostname);
-      return reply(toXcal(input, target), 200, "application/calendar+xml; charset=utf-8");
-    } catch (error) {
-      if (error instanceof RequestError) return reply(error.message, error.status, plain);
-      if (error.name === "TimeoutError" || error.name === "AbortError") {
-        return reply("De kalenderbron reageerde niet op tijd.", 504, plain);
+      const calendars = parseCalendar(await download(url, path.hostname));
+      if (preview) {
+        const calendarUrl = new URL("/convert", path);
+        calendarUrl.search = new URLSearchParams({ url: sourceUrl, to: target });
+        return reply(page({ sourceUrl, target, result: previewResults(calendars, target, calendarUrl.href) }), 200, html);
       }
-      return reply("De kalenderbron kon niet worden verwerkt.", 502, plain);
+      return reply(toXcal(calendars, target), 200, "application/calendar+xml; charset=utf-8");
+    } catch (error) {
+      if (error instanceof RequestError) return failure(error.message, error.status);
+      if (error.name === "TimeoutError" || error.name === "AbortError") {
+        return failure("De kalenderbron reageerde niet op tijd.", 504);
+      }
+      return failure("De kalenderbron kon niet worden verwerkt.", 502);
     }
   }
 };
