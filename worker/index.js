@@ -428,6 +428,11 @@ function titleEdits(query) {
   return edits;
 }
 
+function escapeCalendarText(value) {
+  return value.replaceAll("\\", "\\\\").replaceAll("\n", "\\n")
+    .replaceAll(",", "\\,").replaceAll(";", "\\;");
+}
+
 function editEventTitles(calendars, edits) {
   const replacements = edits.getAll("title-replace");
   const rules = edits.getAll("title-find").map((find, index) => [find, replacements[index]]);
@@ -452,22 +457,21 @@ function editEventTitles(calendars, edits) {
       if (title === original) continue;
       growth += Math.max(0, title.length - original.length);
       if (growth > MAX_BYTES) throw new RequestError(422, "These edits would make the calendar too large.");
-      const value = title.replaceAll("\\", "\\\\").replaceAll("\n", "\\n")
-        .replaceAll(",", "\\,").replaceAll(";", "\\;");
+      const value = escapeCalendarText(title);
       if (summary) summary.value = value;
       else event.properties.push({ name: "summary", parameters: new Map(), value });
     }
   }
 }
 
-function titleInput(name, label, value = "") {
+function optionTextInput(name, label, value = "") {
   return `<label>${label}<input name="${name}" maxlength="160" value="${attribute(value)}"></label>`;
 }
 
 function titleRuleRow(find = "", replacement = "") {
   return `<div class="edit-row replacement-rule">
-${titleInput("title-find", "Find text", find)}
-${titleInput("title-replace", "Replace with", replacement)}
+${optionTextInput("title-find", "Find text", find)}
+${optionTextInput("title-replace", "Replace with", replacement)}
 <button class="secondary" type="button" data-remove-rule aria-label="Remove replacement rule">Remove</button>
 </div>`;
 }
@@ -487,8 +491,8 @@ function titleFieldsHtml(values, enabled) {
 <label class="force-option"><input id="edit-titles" type="checkbox" name="edit-titles" value="1"${enabled ? " checked" : ""}>Edit event titles</label>
 <div class="title-options">
 <div class="edit-row">
-${titleInput("title-prefix", "Add before the title", values.get("title-prefix") || "")}
-${titleInput("title-suffix", "Add after the title", values.get("title-suffix") || "")}
+${optionTextInput("title-prefix", "Add before the title", values.get("title-prefix") || "")}
+${optionTextInput("title-suffix", "Add after the title", values.get("title-suffix") || "")}
 </div>
 <p>Replacement rules run from top to bottom and match exact text. Leave “Replace with” blank to delete the matching text.</p>
 <div id="replacement-rules">${rows.join("")}</div>
@@ -497,13 +501,115 @@ ${titleInput("title-suffix", "Add after the title", values.get("title-suffix") |
 </div></div>`;
 }
 
+const extraOptions = [
+  { toggle: "filter-events", label: "Filter events",
+    fields: [["include-title", "Title contains"], ["exclude-title", "Title excludes"]] },
+  { toggle: "hide-details", label: "Hide event details",
+    fields: [["hide-description", "Descriptions"], ["hide-location", "Locations"],
+      ["hide-attendees", "Attendees and organizers"]], checkboxes: true },
+  { toggle: "rename-calendar", label: "Rename calendar",
+    fields: [["calendar-name", "Calendar name"]] }
+];
+
+function extraEnabled(query, useForm, option) {
+  return useForm ? query.has(option.toggle) : option.fields.some(([name]) => query.has(name));
+}
+
+function readExtras(query, useForm) {
+  const result = new URLSearchParams();
+  for (const option of extraOptions) {
+    if (!extraEnabled(query, useForm, option)) continue;
+    for (const [name, label] of option.fields) {
+      const values = query.getAll(name);
+      if (!values.length) continue;
+      const [value] = values;
+      const invalid = option.checkboxes ? value !== "1" : value.length > 160 || /[\r\n]/.test(value);
+      if (values.length !== 1 || invalid) {
+        throw new RequestError(400, `Invalid value for ${label}.`);
+      }
+      if (value.trim()) result.set(name, value.trim());
+    }
+    if (option.toggle === "rename-calendar" && !result.has("calendar-name")) {
+      throw new RequestError(400, "Enter a calendar name.");
+    }
+  }
+  return result;
+}
+
+function extraFieldsHtml(query, useForm) {
+  return '<input type="hidden" name="extras-form" value="1">' + extraOptions.map(option => {
+    const enabled = extraEnabled(query, useForm, option);
+    const fields = option.fields.map(([name, label]) => {
+      const value = enabled ? query.get(name) : "";
+      if (!option.checkboxes) return optionTextInput(name, label, value || "");
+      return `<label class="force-option"><input type="checkbox" name="${name}" value="1"${value === "1" ? " checked" : ""}>${label}</label>`;
+    }).join("");
+    return `<div class="option-panel extra-option">
+<label class="force-option"><input class="extra-toggle" type="checkbox" name="${option.toggle}" value="1"${enabled ? " checked" : ""}>${option.label}</label>
+<div class="extra-fields">${option.toggle === "filter-events" ? "<p>Matches the original event title, regardless of capitalization.</p>" : ""}${fields}</div>
+</div>`;
+  }).join("");
+}
+
+function applyExtras(calendars, extras) {
+  const include = extras.get("include-title")?.toLowerCase();
+  const exclude = extras.get("exclude-title")?.toLowerCase();
+  const calendarName = extras.get("calendar-name");
+  const hidden = new Set();
+  if (extras.has("hide-description")) {
+    hidden.add("description");
+    hidden.add("x-alt-desc");
+    hidden.add("styled-description");
+  }
+  if (extras.has("hide-location")) {
+    hidden.add("location");
+    hidden.add("geo");
+    hidden.add("x-apple-structured-location");
+  }
+  if (extras.has("hide-attendees")) {
+    hidden.add("attendee");
+    hidden.add("organizer");
+  }
+  for (const calendar of calendars) {
+    if (include || exclude) {
+      const value = (event, name) => event.properties.find(field => field.name === name)?.value;
+      const series = new Map(calendar.children
+        .filter(event => event.name === "vevent" && value(event, "uid") && !value(event, "recurrence-id"))
+        .map(event => [value(event, "uid"), value(event, "summary")]));
+      calendar.children = calendar.children.filter(event => {
+        if (event.name !== "vevent") return true;
+        const uid = value(event, "uid");
+        const summary = series.has(uid) ? series.get(uid) : value(event, "summary");
+        const title = unescapeText(summary || "").toLowerCase();
+        return (!include || title.includes(include)) && (!exclude || !title.includes(exclude));
+      });
+    }
+    if (hidden.size) {
+      for (const event of calendar.children) {
+        if (event.name !== "vevent") continue;
+        event.properties = event.properties.filter(field => !hidden.has(field.name));
+        // Keep alarms valid when a field required by their action is hidden.
+        event.children = event.children.filter(child =>
+          child.name !== "valarm" || !child.properties.some(field => hidden.has(field.name)));
+      }
+    }
+    if (calendarName) {
+      calendar.properties = calendar.properties.filter(field => !["name", "x-wr-calname"].includes(field.name));
+      const name = escapeCalendarText(calendarName);
+      for (const property of ["name", "x-wr-calname"]) {
+        calendar.properties.push({ name: property, parameters: new Map(), value: name });
+      }
+    }
+  }
+}
+
 function previewTime(value) {
   const [date, clock] = extended(value).split("T");
   const [year, month, day] = date.split("-");
   return `${day}-${month}-${year}${clock ? " " + clock.slice(0, 5) : " · all day"}`;
 }
 
-function previewResults(calendars, target, calendarUrl, query) {
+function previewResults(calendars, target, calendarUrl, query, calendarName) {
   const events = calendars.flatMap(calendar => calendar.children.filter(component => component.name === "vevent"));
   const pageSize = 10;
   const pageCount = Math.max(1, Math.ceil(events.length / pageSize));
@@ -525,7 +631,7 @@ function previewResults(calendars, target, calendarUrl, query) {
       ${endLabel}</div></li>`;
   }).join("");
   return `<section aria-labelledby="result">
-<h2 id="result">Calendar</h2>
+<h2 id="result">${escapeHtml(calendarName || "Calendar")}</h2>
 <label for="calendar-url">Google Calendar subscription URL (.ics)</label>
 <div class="calendar-link">
 <input id="calendar-url" readonly spellcheck="false" value="${attribute(calendarUrl)}">
@@ -543,7 +649,8 @@ ${rows ? `<ul class="events">${rows}</ul>` : "<p>The source feed contains no eve
 
 function previewPagination(query, currentPage, pageCount) {
   const previewFields = ["url", "force", "timezone", "forcetimezone", "to", "title-form", "edit-titles",
-    "title-prefix", "title-suffix", "title-find", "title-replace", "title-remove"];
+    "title-prefix", "title-suffix", "title-find", "title-replace", "title-remove", "extras-form",
+    ...extraOptions.flatMap(option => [option.toggle, ...option.fields.map(([name]) => name)])];
   const fields = [...query].filter(([name]) => previewFields.includes(name)).map(([name, value]) =>
     `<input type="hidden" name="${attribute(name)}" value="${attribute(value)}">`).join("");
   const options = Array.from({ length: pageCount }, (_, index) => {
@@ -565,7 +672,7 @@ function timeZoneOptions(selected) {
     `<option value="${attribute(zone)}"${zone === active ? " selected" : ""}>${escapeHtml(zone)}</option>`).join("");
 }
 
-function page({ sourceUrl = "", target = "", force = false, edits = new URLSearchParams(), editTitles = false, result = "" } = {}) {
+function page({ sourceUrl = "", target = "", force = false, edits = new URLSearchParams(), editTitles = false, extraQuery = new URLSearchParams(), extraForm = false, result = "" } = {}) {
   return `<!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer"><title>CalTune</title>
@@ -582,6 +689,9 @@ input,select{width:100%;border:1px solid #758a9a;color:inherit}
 .force-zone:has(input:checked) .zone-select{display:grid}
 select{appearance:none;padding-right:2.5rem;background:linear-gradient(45deg,transparent 50%,#173047 50%) right 1.2rem center/6px 6px no-repeat,linear-gradient(135deg,#173047 50%,transparent 50%) right .85rem center/6px 6px no-repeat,#fff}
 .option-panel{border:1px solid #cbd7e0;border-radius:.5rem;padding:.75rem}
+.extra-fields{display:none;margin-top:.75rem}
+.extra-option:has(.extra-toggle:checked) .extra-fields{display:grid;gap:.65rem}
+.extra-fields p{margin:0}
 .title-options{display:none;margin-top:.75rem}
 .title-edits:has(#edit-titles:checked) .title-options{display:block}
 .title-edits p{margin:.65rem 0}
@@ -610,6 +720,7 @@ ${titleFieldsHtml(edits, editTitles)}
 <label class="force-option"><input type="checkbox" name="force" value="1"${force ? " checked" : ""}>Force timezone</label>
 <label class="zone-select">Target time zone<select name="timezone">${timeZoneOptions(target)}</select></label>
 </div>
+${extraFieldsHtml(extraQuery, extraForm)}
 <button>Show calendar and events</button></form>
 ${result}</main></html>`;
 }
@@ -682,12 +793,15 @@ export default {
     const editTitles = query.has("title-form") && preview
       ? query.has("edit-titles")
       : [...query].some(([key, value]) => key.startsWith("title-") && value.trim());
+    const extraForm = preview && query.has("extras-form");
     const form = {
       sourceUrl: query.get("url") || "",
       target: force ? query.get(useForm ? "timezone" : zoneParameter) || "" : "",
       force,
       edits: editTitles ? query : new URLSearchParams(),
-      editTitles
+      editTitles,
+      extraQuery: query,
+      extraForm
     };
     const failure = (message, status) => preview
       ? reply(page({ ...form, result: `<p role="alert">${escapeHtml(message)}</p>` }), status, html)
@@ -703,19 +817,23 @@ export default {
       const zones = force ? query.getAll(useForm ? "timezone" : zoneParameter) : [];
       if (force && (zones.length !== 1 || !zones[0])) throw new RequestError(400, "Select a target time zone.");
       const target = force ? timeZone(zones[0]) : "";
+      const extras = readExtras(query, extraForm);
       const edits = editTitles ? titleEdits(query) : new URLSearchParams();
       const url = validateSource(sourceUrl, path.hostname);
       const input = await download(url, path.hostname);
       const calendarType = "text/calendar; charset=utf-8";
-      if (!preview && !target && !edits.size) return reply(input, 200, calendarType);
+      if (!preview && !target && !edits.size && !extras.size) return reply(input, 200, calendarType);
       const calendars = parseCalendar(new TextDecoder().decode(input));
+      if (extras.size) applyExtras(calendars, extras);
       if (edits.size) editEventTitles(calendars, edits);
       if (preview) {
         const calendarUrl = new URL("/calendar.ics", path);
         calendarUrl.searchParams.set("url", sourceUrl);
         if (target) calendarUrl.searchParams.set("forcetimezone", target);
         for (const [name, value] of edits) calendarUrl.searchParams.append(name, value);
-        return reply(page({ sourceUrl, target, force, edits, editTitles, result: previewResults(calendars, target, calendarUrl.href, query) }), 200, html);
+        for (const [name, value] of extras) calendarUrl.searchParams.set(name, value);
+        const result = previewResults(calendars, target, calendarUrl.href, query, extras.get("calendar-name"));
+        return reply(page({ ...form, sourceUrl, target, edits, result }), 200, html);
       }
       return reply(toIcs(calendars, target), 200, calendarType);
     } catch (error) {

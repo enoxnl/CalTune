@@ -14,3 +14,5 @@ Heledagafspraken houden hun kalenderdatum. Begin- en eindtijden en expliciete he
 
 
 Optionele titelbewerkingen gebruiken maximaal twaalf paren van `title-find` en `title-replace`. De regels worden in volgorde uitgevoerd en zoeken hoofdlettergevoelig naar letterlijke tekst. Een lege vervangtekst verwijdert de gevonden tekst. Daarna worden `title-prefix` en `title-suffix` toegevoegd. De oude parameter `title-remove` blijft werken als laatste vervangregel met een lege vervangtekst. Titelbewerkingen zijn te combineren met `forcetimezone`.
+
+Gebruik `include-title` of `exclude-title` om afspraken te filteren op letterlijke tekst in de oorspronkelijke titel, ongeacht hoofdletters. Herhaalreeksen worden gefilterd op de titel van de reeks. Gebruik `hide-description=1`, `hide-location=1` of `hide-attendees=1` om afspraakdetails weg te laten. `calendar-name` stelt de naam in die agenda-apps uit de feed kunnen overnemen.
