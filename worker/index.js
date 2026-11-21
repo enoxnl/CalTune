@@ -537,6 +537,59 @@ function extraEnabled(query, useForm, option) {
   return useForm ? query.has(option.toggle) : option.fields.some(([name]) => query.has(name));
 }
 
+const durationUnits = [
+  ["week", "P", "W"], ["day", "P", "D"], ["hour", "PT", "H"],
+  ["minute", "PT", "M"], ["second", "PT", "S"]
+];
+
+function durationParts(value) {
+  const match = /^\+?P(?:(\d+)W|(?=\d+D|T)(?:(\d+)D)?(?:T(?=\d)(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?)$/i.exec(value);
+  if (!match) return null;
+  return durationUnits.flatMap(([unit], index) => {
+    const amount = match[index + 1]?.replace(/^0+(?=\d)/, "");
+    return amount === undefined ? [] : [[unit, amount]];
+  });
+}
+
+function humanDuration(value) {
+  const parts = durationParts(value);
+  if (!parts) return value;
+  const positive = parts.filter(([, amount]) => amount !== "0");
+  return positive.map(([unit, amount]) => `${amount} ${unit}${amount === "1" ? "" : "s"}`).join(", ") || "0 seconds";
+}
+
+function publishedTtlFromForm(query, existing) {
+  const amounts = query.getAll("published-ttl-amount");
+  const units = query.getAll("published-ttl-unit");
+  if (!amounts.length && !units.length) return existing;
+  if (amounts.length === 1 && units.length === 1) {
+    const amount = amounts[0];
+    const unit = durationUnits.find(([name]) => name === units[0]);
+    if (!amount && existing && unit) return existing;
+    if (/^\d{1,155}$/.test(amount) && /[1-9]/.test(amount) && unit) {
+      return `${unit[1]}${amount.replace(/^0+/, "")}${unit[2]}`;
+    }
+  }
+  throw new RequestError(400, "Enter a positive whole number and select a time unit.");
+}
+
+function durationFields(query, enabled) {
+  const existing = enabled ? query.get("published-ttl") || "" : "";
+  const parts = (durationParts(existing) || []).filter(([, amount]) => amount !== "0");
+  const [existingUnit, existingAmount] = parts.length === 1 ? parts[0] : [];
+  const amount = enabled ? query.get("published-ttl-amount") || existingAmount || "" : "";
+  const unit = enabled ? query.get("published-ttl-unit") || existingUnit || "minute" : "minute";
+  const choices = durationUnits.map(([name]) =>
+    `<option value="${name}"${name === unit ? " selected" : ""}>${name[0].toUpperCase() + name.slice(1)}s</option>`).join("");
+  const compound = parts.length > 1 ?
+    `<input type="hidden" name="published-ttl" value="${attribute(existing)}">
+<p>Current interval: ${escapeHtml(humanDuration(existing))}. Enter a new amount to replace it.</p>` : "";
+  return `${compound}<div class="edit-row" data-duration-fields>
+<label>Amount<input type="number" name="published-ttl-amount" min="1" step="1" value="${attribute(amount)}"></label>
+<label>Unit<select name="published-ttl-unit">${choices}</select></label>
+</div>`;
+}
+
 function readExtras(query, useForm) {
   const result = new URLSearchParams();
   for (const option of extraOptions) {
@@ -555,10 +608,10 @@ function readExtras(query, useForm) {
       }
     }
     if (option.toggle === "set-published-ttl") {
-      const ttl = result.get("published-ttl")?.toUpperCase() || "";
-      const duration = /^\+?P(?:\d+W|\d+D(?:T(?=\d)(?:\d+H)?(?:\d+M)?(?:\d+S)?)?|T(?=\d)(?:\d+H)?(?:\d+M)?(?:\d+S)?)$/;
-      if (!duration.test(ttl) || !/[1-9]/.test(ttl)) {
-        throw new RequestError(400, "Enter a positive iCalendar duration, such as PT30M, PT1H, or P1D.");
+      const original = result.get("published-ttl") || "";
+      const ttl = (useForm ? publishedTtlFromForm(query, original) : original).toUpperCase();
+      if (!durationParts(ttl)?.some(([, amount]) => amount !== "0")) {
+        throw new RequestError(400, "Enter a positive refresh interval.");
       }
       result.set("published-ttl", ttl);
     }
@@ -598,6 +651,7 @@ function extraFieldsHtml(query, useForm) {
   return Object.fromEntries(extraOptions.map(option => {
     const enabled = extraEnabled(query, useForm, option);
     const fields = option.fields.map(([name, label]) => {
+      if (option.toggle === "set-published-ttl") return durationFields(query, enabled);
       if (option.multiple) return filterRuleFields(name, label, enabled ? query.getAll(name) : []);
       const value = enabled ? query.get(name) : "";
       if (option.choices) {
@@ -608,8 +662,7 @@ function extraFieldsHtml(query, useForm) {
       if (!option.checkboxes) return optionTextInput(name, label, value || "");
       return `<label class="force-option"><input type="checkbox" name="${name}" value="1"${value === "1" ? " checked" : ""}>${label}</label>`;
     }).join("");
-    const hint = option.toggle === "filter-events" ? "Matches the original event title, regardless of capitalization."
-      : option.toggle === "set-published-ttl" ? "Use an iCalendar duration such as PT30M, PT1H, or P1D." : "";
+    const hint = option.toggle === "filter-events" ? "Matches the original event title, regardless of capitalization." : "";
     return [option.toggle, `<div class="option-panel extra-option">
 <label class="force-option"><input class="extra-toggle" type="checkbox" name="${option.toggle}" value="1"${enabled ? " checked" : ""}>${option.label}</label>
 <div class="extra-fields">${hint ? `<p>${hint}</p>` : ""}${fields}</div>
@@ -736,8 +789,8 @@ function calendarOverview(calendars) {
       name: value("name", "x-wr-calname") || "No calendar name",
       details: [
         ["Events", calendar.children.filter(component => component.name === "vevent").length],
-        ["Suggested refresh interval", value("x-published-ttl") || "Not set"],
-        ["Refresh interval", value("refresh-interval")],
+        ["Suggested refresh interval", humanDuration(value("x-published-ttl")) || "Not set"],
+        ["Refresh interval", humanDuration(value("refresh-interval"))],
         ["Description", value("description", "x-wr-caldesc")],
         ["Time zone", value("x-wr-timezone")],
         ["iCalendar version", value("version")],
@@ -812,6 +865,7 @@ function previewPagination(query, currentPage, pageCount, eventCount) {
   const previewFields = ["url", "force", "timezone", "forcetimezone", "to", "title-form", "edit-titles",
     "title-prefix", "title-suffix", "title-find", "title-replace", "title-remove", "extras-form",
     "description-form", "edit-descriptions", "description-prefix", "description-suffix", "description-find", "description-replace",
+    "published-ttl-amount", "published-ttl-unit",
     ...extraOptions.flatMap(option => [option.toggle, ...option.fields.map(([name]) => name)])];
   const fields = [...query].filter(([name]) => previewFields.includes(name)).map(([name, value]) =>
     `<input type="hidden" name="${attribute(name)}" value="${attribute(value)}">`).join("");
@@ -927,6 +981,16 @@ for (const row of document.querySelectorAll(".event-comparison, .calendar-compar
   if (!original || !updated) continue;
   original.addEventListener("toggle", () => { updated.open = original.open; });
   updated.addEventListener("toggle", () => { original.open = updated.open; });
+}
+
+const duration = document.querySelector("[data-duration-fields]");
+if (duration) {
+  const toggle = document.querySelector('input[name="set-published-ttl"]');
+  const syncDurationFields = () => {
+    for (const field of duration.querySelectorAll("input, select")) field.disabled = !toggle.checked;
+  };
+  toggle.addEventListener("change", syncDurationFields);
+  syncDurationFields();
 }
 
 const pageSelect = document.getElementById("preview-page");
