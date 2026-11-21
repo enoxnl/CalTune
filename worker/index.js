@@ -527,8 +527,8 @@ const extraOptions = [
     fields: [["force-status", "Target status"]], choices: eventStatuses },
   { toggle: "force-event-url", label: "Force event URL",
     fields: [["event-url", "Replacement event URL"]], url: true },
-  { toggle: "set-published-ttl", label: "Set published TTL",
-    fields: [["published-ttl", "X-PUBLISHED-TTL"]] },
+  { toggle: "set-published-ttl", label: "Set suggested refresh interval",
+    fields: [["published-ttl", "Suggested refresh interval"]] },
   { toggle: "rename-calendar", label: "Rename calendar",
     fields: [["calendar-name", "Calendar name"]] }
 ];
@@ -736,7 +736,7 @@ function calendarOverview(calendars) {
       name: value("name", "x-wr-calname") || "No calendar name",
       details: [
         ["Events", calendar.children.filter(component => component.name === "vevent").length],
-        ["X-PUBLISHED-TTL", value("x-published-ttl") || "Not set"],
+        ["Suggested refresh interval", value("x-published-ttl") || "Not set"],
         ["Refresh interval", value("refresh-interval")],
         ["Description", value("description", "x-wr-caldesc")],
         ["Time zone", value("x-wr-timezone")],
