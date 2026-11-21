@@ -2,7 +2,6 @@ const MAX_BYTES = 2 * 1024 * 1024;
 const appointmentFields = new Set(["dtstart", "dtend", "due", "recurrence-id", "rdate", "exdate", "trigger"]);
 const appointmentTypes = { trigger: "duration" };
 
-const DEFAULT_TIME_ZONE = "Europe/Amsterdam";
 // IANA tzdata 2026e, including aliases and fixed-offset Etc zones.
 const IANA_TIME_ZONES = `Africa/Abidjan Africa/Accra Africa/Addis_Ababa Africa/Algiers
 Africa/Asmara Africa/Asmera Africa/Bamako Africa/Bangui
@@ -126,7 +125,7 @@ Europe/Saratov Europe/Simferopol Europe/Skopje Europe/Sofia
 Europe/Stockholm Europe/Tallinn Europe/Tirane Europe/Tiraspol
 Europe/Ulyanovsk Europe/Uzhgorod Europe/Vaduz Europe/Vatican
 Europe/Vienna Europe/Vilnius Europe/Volgograd Europe/Warsaw
-Europe/Zagreb Europe/Zaporozhye Europe/Zurich Factory
+Europe/Zagreb Europe/Zaporozhye Europe/Zurich
 GB GB-Eire GMT GMT+0
 GMT-0 GMT0 Greenwich HST
 Hongkong Iceland Indian/Antananarivo Indian/Chagos
@@ -366,19 +365,25 @@ async function download(url, originHost) {
       throw new RequestError(413, "De kalender is groter dan 2 MiB.");
     }
     const reader = response.body.getReader();
-    const decoder = new TextDecoder();
+    const chunks = [];
     let size = 0;
-    let contents = "";
     while (true) {
       const { value, done } = await reader.read();
-      if (done) return contents + decoder.decode();
+      if (done) break;
       size += value.byteLength;
       if (size > MAX_BYTES) {
         await reader.cancel();
         throw new RequestError(413, "De kalender is groter dan 2 MiB.");
       }
-      contents += decoder.decode(value, { stream: true });
+      chunks.push(value);
     }
+    const contents = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      contents.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return contents;
   }
   throw new RequestError(502, "De bron gaf te veel of ongeldige omleidingen.");
 }
@@ -405,21 +410,23 @@ function previewResults(calendars, target, calendarUrl) {
       ${endLabel}</div></li>`;
   }).join("");
   return `<section aria-labelledby="result">
-<h2 id="result">Aangepaste kalender</h2>
+<h2 id="result">Kalender</h2>
 <label>Abonnements-URL voor Google Agenda (.ics)<input readonly spellcheck="false" value="${attribute(calendarUrl)}"></label>
 <p><a href="${attribute(calendarUrl)}">Open .ics</a></p>
 <h3>Eerste afspraken</h3>
-<p>Tijdzone ${escapeHtml(target)}. Maximaal 10 afspraken in de volgorde van de bronfeed.</p>
+<p>${target ? `Tijdzone ${escapeHtml(target)}.` : "Tijden en tijdzones uit de bronfeed."} Maximaal 10 afspraken in de volgorde van de bronfeed.</p>
 ${rows ? `<ul class="events">${rows}</ul>` : "<p>De bronfeed bevat geen afspraken.</p>"}
 </section>`;
 }
 
 function timeZoneOptions(selected) {
-  const zones = TIME_ZONES.includes(selected) ? TIME_ZONES : ["", ...TIME_ZONES];
-  return zones.map(zone => `<option value="${attribute(zone)}"${(zone === selected || zone === "") ? " selected" : ""}${zone === "" ? " disabled" : ""}>${escapeHtml(zone || "Kies een tijdzone")}</option>`).join("");
+  const active = TIME_ZONES.includes(selected) ? selected : "";
+  const placeholder = `<option value="" disabled${active ? "" : " selected"}>Kies een tijdzone</option>`;
+  return placeholder + TIME_ZONES.map(zone =>
+    `<option value="${attribute(zone)}"${zone === active ? " selected" : ""}>${escapeHtml(zone)}</option>`).join("");
 }
 
-function page({ sourceUrl = "", target = DEFAULT_TIME_ZONE, result = "" } = {}) {
+function page({ sourceUrl = "", target = "", force = false, result = "" } = {}) {
   return `<!doctype html>
 <html lang="nl"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer"><title>FixiCal</title>
@@ -429,6 +436,10 @@ main{max-width:40rem;margin:clamp(2rem,9vw,7rem) auto;padding:0 1rem}h1{font-siz
 form{display:grid;gap:1rem;padding:1.5rem;background:white;border:1px solid #cbd7e0;border-radius:1rem}
 label{display:grid;gap:.3rem;font-weight:600}input,select,button{font:inherit;border-radius:.45rem;padding:.65rem .8rem}
 input,select{width:100%;border:1px solid #758a9a;color:inherit}
+.force-option{display:flex;align-items:center;gap:.5rem}
+.force-option input{width:1.1rem;height:1.1rem;margin:0;accent-color:#145361}
+.force-zone{display:grid;gap:.75rem}.force-zone .zone-select{display:none}
+.force-zone:has(input:checked) .zone-select{display:grid}
 select{appearance:none;padding-right:2.5rem;background:linear-gradient(45deg,transparent 50%,#173047 50%) right 1.2rem center/6px 6px no-repeat,linear-gradient(135deg,#173047 50%,transparent 50%) right .85rem center/6px 6px no-repeat,#fff}
 button{border:0;background:#145361;color:white;font-weight:700;cursor:pointer}
 a{color:#145361;text-decoration-thickness:.1em;text-underline-offset:.15em}
@@ -437,10 +448,13 @@ section h2{margin-top:0}.events{margin:0;padding:0;list-style:none}
 .events li{padding:.8rem 0;border-top:1px solid #cbd7e0;overflow-wrap:anywhere}
 .times{display:flex;flex-wrap:wrap;gap:.25rem 1rem}
 p[role=alert]{padding:1rem;background:#fff4f1;color:#61231d;border-radius:.45rem}
-</style><main><h1>FixiCal</h1><p>Vervang de tijdzone van afspraken en behoud de kloktijden. Abonneer je op de aangepaste kalender via de .ics-link.</p>
+</style><main><h1>FixiCal</h1><p>Maak een .ics-abonnementslink. Je kunt de tijdzone overschrijven met behoud van de kloktijden.</p>
 <form action="/preview" method="get">
 <label>Bron-URL<input name="url" required value="${attribute(sourceUrl)}" placeholder="https://…/kalender.ics"></label>
-<label>Doeltijdzone<select name="forcetimezone" required>${timeZoneOptions(target)}</select></label>
+<div class="force-zone">
+<label class="force-option"><input type="checkbox" name="force" value="1"${force ? " checked" : ""}>Force timezone</label>
+<label class="zone-select">Doeltijdzone<select name="timezone">${timeZoneOptions(target)}</select></label>
+</div>
 <button>Toon kalender en afspraken</button></form>
 ${result}</main></html>`;
 }
@@ -459,11 +473,14 @@ export default {
     const plain = "text/plain; charset=utf-8";
     const html = "text/html; charset=utf-8";
     const preview = path.pathname === "/preview";
-    const zoneParameter = path.searchParams.has("to") && !path.searchParams.has("forcetimezone")
-      ? "to" : "forcetimezone";
+    const query = path.searchParams;
+    const zoneParameter = query.has("forcetimezone") ? "forcetimezone" : "to";
+    const useForm = preview && !query.has(zoneParameter);
+    const force = useForm ? query.has("force") : query.has(zoneParameter);
     const form = {
-      sourceUrl: path.searchParams.get("url") || "",
-      target: path.searchParams.get(zoneParameter) || DEFAULT_TIME_ZONE
+      sourceUrl: query.get("url") || "",
+      target: force ? query.get(useForm ? "timezone" : zoneParameter) || "" : "",
+      force
     };
     const failure = (message, status) => preview
       ? reply(page({ ...form, result: `<p role="alert">${escapeHtml(message)}</p>` }), status, html)
@@ -472,21 +489,24 @@ export default {
     if (path.pathname === "/" && !path.search) return reply(page(), 200, html);
     if (!["/", "/convert", "/preview", "/calendar.ics"].includes(path.pathname)) return reply("Route niet gevonden.", 404, plain);
     try {
-      const parameters = ["url", zoneParameter].map(name => {
-        const values = path.searchParams.getAll(name);
-        if (values.length !== 1 || !values[0]) throw new RequestError(400, `Geef parameter "${name}" één keer op.`);
-        return values[0];
-      });
-      const [sourceUrl, requestedZone] = parameters;
-      const target = timeZone(requestedZone);
+      const values = query.getAll("url");
+      if (values.length !== 1 || !values[0]) throw new RequestError(400, 'Geef parameter "url" één keer op.');
+      const [sourceUrl] = values;
+      const zones = force ? query.getAll(useForm ? "timezone" : zoneParameter) : [];
+      if (force && (zones.length !== 1 || !zones[0])) throw new RequestError(400, "Kies één doeltijdzone.");
+      const target = force ? timeZone(zones[0]) : "";
       const url = validateSource(sourceUrl, path.hostname);
-      const calendars = parseCalendar(await download(url, path.hostname));
+      const input = await download(url, path.hostname);
+      const calendarType = "text/calendar; charset=utf-8";
+      if (!preview && !target) return reply(input, 200, calendarType);
+      const calendars = parseCalendar(new TextDecoder().decode(input));
       if (preview) {
         const calendarUrl = new URL("/calendar.ics", path);
-        calendarUrl.search = new URLSearchParams({ url: sourceUrl, forcetimezone: target });
-        return reply(page({ sourceUrl, target, result: previewResults(calendars, target, calendarUrl.href) }), 200, html);
+        calendarUrl.searchParams.set("url", sourceUrl);
+        if (target) calendarUrl.searchParams.set("forcetimezone", target);
+        return reply(page({ sourceUrl, target, force, result: previewResults(calendars, target, calendarUrl.href) }), 200, html);
       }
-      return reply(toIcs(calendars, target), 200, "text/calendar; charset=utf-8");
+      return reply(toIcs(calendars, target), 200, calendarType);
     } catch (error) {
       if (error instanceof RequestError) return failure(error.message, error.status);
       if (error.name === "TimeoutError" || error.name === "AbortError") {
