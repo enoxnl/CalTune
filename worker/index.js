@@ -537,18 +537,18 @@ function readExtras(query, useForm) {
 }
 
 function extraFieldsHtml(query, useForm) {
-  return '<input type="hidden" name="extras-form" value="1">' + extraOptions.map(option => {
+  return Object.fromEntries(extraOptions.map(option => {
     const enabled = extraEnabled(query, useForm, option);
     const fields = option.fields.map(([name, label]) => {
       const value = enabled ? query.get(name) : "";
       if (!option.checkboxes) return optionTextInput(name, label, value || "");
       return `<label class="force-option"><input type="checkbox" name="${name}" value="1"${value === "1" ? " checked" : ""}>${label}</label>`;
     }).join("");
-    return `<div class="option-panel extra-option">
+    return [option.toggle, `<div class="option-panel extra-option">
 <label class="force-option"><input class="extra-toggle" type="checkbox" name="${option.toggle}" value="1"${enabled ? " checked" : ""}>${option.label}</label>
 <div class="extra-fields">${option.toggle === "filter-events" ? "<p>Matches the original event title, regardless of capitalization.</p>" : ""}${fields}</div>
-</div>`;
-  }).join("");
+</div>`];
+  }));
 }
 
 function applyExtras(calendars, extras) {
@@ -673,6 +673,7 @@ function timeZoneOptions(selected) {
 }
 
 function page({ sourceUrl = "", target = "", force = false, edits = new URLSearchParams(), editTitles = false, extraQuery = new URLSearchParams(), extraForm = false, result = "" } = {}) {
+  const extraPanels = extraFieldsHtml(extraQuery, extraForm);
   return `<!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer"><title>CalTune</title>
@@ -715,12 +716,15 @@ p[role=alert]{padding:1rem;background:#fff4f1;color:#61231d;border-radius:.45rem
 </style><main><h1>CalTune</h1><p>Create an .ics subscription link. You can override the time zone while keeping the local clock times.</p>
 <form action="/preview" method="get">
 <label>Source URL<input name="url" required value="${attribute(sourceUrl)}" placeholder="https://…/calendar.ics"></label>
+<input type="hidden" name="extras-form" value="1">
+${extraPanels["rename-calendar"]}
+${extraPanels["filter-events"]}
 ${titleFieldsHtml(edits, editTitles)}
+${extraPanels["hide-details"]}
 <div class="option-panel force-zone">
 <label class="force-option"><input type="checkbox" name="force" value="1"${force ? " checked" : ""}>Force timezone</label>
 <label class="zone-select">Target time zone<select name="timezone">${timeZoneOptions(target)}</select></label>
 </div>
-${extraFieldsHtml(extraQuery, extraForm)}
 <button>Show calendar and events</button></form>
 ${result}</main></html>`;
 }
