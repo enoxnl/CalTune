@@ -182,6 +182,91 @@ function toXcal(calendars, target) {
     contents + "</icalendar>\n";
 }
 
+function iCalendarTimeZone(target) {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: target, calendar: "iso8601", numberingSystem: "latn", hourCycle: "h23",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit"
+  });
+}
+
+function utcAppointment(value, zone) {
+  if (value.startsWith("P")) return value;
+  const clock = extended(value).replace(/Z$/, "");
+  const nominal = Date.parse(clock + "Z");
+  if (!Number.isFinite(nominal) || new Date(nominal).toISOString().slice(0, 19) !== clock) {
+    throw new RequestError(422, "Ongeldige datum of tijd in de kalender.");
+  }
+  const wallTime = instant => {
+    const p = Object.fromEntries(zone.formatToParts(instant).map(({ type, value }) => [type, value]));
+    return `${p.year.padStart(4, "0")}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}`;
+  };
+  const offset = instant => Date.parse(wallTime(instant) + "Z") - instant;
+  const day = 86_400_000;
+  const earlierOffset = offset(nominal - day);
+  const candidates = [...new Set([earlierOffset, offset(nominal), offset(nominal + day)])]
+    .map(delta => nominal - delta).filter(instant => wallTime(instant) === clock);
+  // iCalendar chooses the earlier occurrence in an overlap and the pre-gap offset.
+  const instant = candidates.length ? Math.min(...candidates) : nominal - earlierOffset;
+  return new Date(instant).toISOString().slice(0, 19).replace(/[-:]/g, "") + "Z";
+}
+
+function foldCalendarLine(line) {
+  let result = "";
+  let bytes = 0;
+  for (const character of line) {
+    const point = character.codePointAt(0);
+    const size = point <= 0x7f ? 1 : point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4;
+    if (bytes + size > 75) {
+      result += "\r\n ";
+      bytes = 1;
+    }
+    result += character;
+    bytes += size;
+  }
+  return result;
+}
+
+function toIcs(calendars, target) {
+  const zone = iCalendarTimeZone(target);
+  const parameterValue = value => {
+    const encoded = value.replaceAll("^", "^^").replaceAll('"', "^'").replaceAll("\n", "^n");
+    return /[;:,]/.test(encoded) ? `"${encoded}"` : encoded;
+  };
+  const lines = [];
+  for (const calendar of calendars) {
+    const uid = component => component.properties.find(property => property.name === "uid")?.value;
+    const hasRule = component => component.properties.some(property => property.name === "rrule");
+    const series = new Set(calendar.children.filter(hasRule).map(uid).filter(Boolean));
+    function writeComponent(component, rewrite = true, recurring = false) {
+      rewrite = rewrite && component.name !== "vtimezone";
+      recurring = recurring || hasRule(component) || series.has(uid(component));
+      const name = component.name.toUpperCase();
+      lines.push(`BEGIN:${name}`);
+      for (const property of component.properties) {
+        const parameters = new Map(property.parameters);
+        const type = parameters.get("value")?.[0].toLowerCase() || types[property.name];
+        let value = property.value;
+        if (rewrite && appointmentFields.has(property.name) && (type === "date-time" || type === "period")) {
+          parameters.delete("tzid");
+          // A series uses its local clock across DST. Standalone instants are unambiguous in UTC.
+          const local = recurring && target !== "UTC" && property.name !== "trigger";
+          if (local) parameters.set("tzid", [target]);
+          value = value.split(",").map(item => item.split("/").map(part =>
+            local ? part.replace(/Z$/, "") : utcAppointment(part, zone)).join("/")).join(",");
+        }
+        const suffix = [...parameters].map(([key, values]) =>
+          `;${key.toUpperCase()}=${values.map(parameterValue).join(",")}`).join("");
+        lines.push(`${property.name.toUpperCase()}${suffix}:${value}`);
+      }
+      for (const child of component.children) writeComponent(child, rewrite, component.name !== "vcalendar" && recurring);
+      lines.push(`END:${name}`);
+    }
+    writeComponent(calendar);
+  }
+  return lines.map(foldCalendarLine).join("\r\n") + "\r\n";
+}
+
 function validateSource(value, originHost) {
   let url;
   try {
@@ -248,7 +333,7 @@ function previewTime(value) {
   return `${day}-${month}-${year}${clock ? " " + clock.slice(0, 5) : " · hele dag"}`;
 }
 
-function previewResults(calendars, target, calendarUrl) {
+function previewResults(calendars, target, calendarUrl, xmlUrl) {
   const events = calendars.flatMap(calendar => calendar.children.filter(component => component.name === "vevent"))
     .slice(0, 10);
   const rows = events.map(event => {
@@ -263,8 +348,8 @@ function previewResults(calendars, target, calendarUrl) {
   }).join("");
   return `<section aria-labelledby="result">
 <h2 id="result">Aangepaste kalender</h2>
-<label>Kalender-URL (xCal/XML)<input readonly spellcheck="false" value="${attribute(calendarUrl)}"></label>
-<p><a href="${attribute(calendarUrl)}">Open kalender-URL</a></p>
+<label>Abonnements-URL voor Google Agenda (.ics)<input readonly spellcheck="false" value="${attribute(calendarUrl)}"></label>
+<p><a href="${attribute(calendarUrl)}">Open .ics</a> · <a href="${attribute(xmlUrl)}">Open xCal (XML)</a></p>
 <h3>Eerste afspraken</h3>
 <p>Tijdzone ${xml(target)}. Maximaal 10 afspraken in de volgorde van de bronfeed.</p>
 ${rows ? `<ul class="events">${rows}</ul>` : "<p>De bronfeed bevat geen afspraken.</p>"}
@@ -287,7 +372,7 @@ section h2{margin-top:0}.events{margin:0;padding:0;list-style:none}
 .events li{padding:.8rem 0;border-top:1px solid #cbd7e0;overflow-wrap:anywhere}
 .times{display:flex;flex-wrap:wrap;gap:.25rem 1rem}
 p[role=alert]{padding:1rem;background:#fff4f1;color:#61231d;border-radius:.45rem}
-</style><main><h1>FixiCal</h1><p>Vervang de tijdzone van afspraken en behoud de kloktijden. Het resultaat is xCal (XML).</p>
+</style><main><h1>FixiCal</h1><p>Vervang de tijdzone van afspraken en behoud de kloktijden. Abonneer je op de aangepaste kalender via de .ics-link.</p>
 <form action="/preview" method="get">
 <label>Bron-URL<input name="url" required value="${attribute(sourceUrl)}" placeholder="https://…/kalender.ics"></label>
 <label>Doeltijdzone<input name="to" required value="${attribute(target)}"></label>
@@ -318,7 +403,7 @@ export default {
       : reply(message, status, plain);
     if (request.method !== "GET") return reply("Gebruik GET.", 405, plain, { Allow: "GET" });
     if (path.pathname === "/" && !path.search) return reply(page(), 200, html);
-    if (!["/", "/convert", "/preview"].includes(path.pathname)) return reply("Route niet gevonden.", 404, plain);
+    if (!["/", "/convert", "/preview", "/calendar.ics"].includes(path.pathname)) return reply("Route niet gevonden.", 404, plain);
     try {
       const parameters = ["url", "to"].map(name => {
         const values = path.searchParams.getAll(name);
@@ -330,9 +415,14 @@ export default {
       const url = validateSource(sourceUrl, path.hostname);
       const calendars = parseCalendar(await download(url, path.hostname));
       if (preview) {
-        const calendarUrl = new URL("/convert", path);
+        const calendarUrl = new URL("/calendar.ics", path);
         calendarUrl.search = new URLSearchParams({ url: sourceUrl, to: target });
-        return reply(page({ sourceUrl, target, result: previewResults(calendars, target, calendarUrl.href) }), 200, html);
+        const xmlUrl = new URL("/convert", path);
+        xmlUrl.search = calendarUrl.search;
+        return reply(page({ sourceUrl, target, result: previewResults(calendars, target, calendarUrl.href, xmlUrl.href) }), 200, html);
+      }
+      if (path.pathname === "/calendar.ics") {
+        return reply(toIcs(calendars, target), 200, "text/calendar; charset=utf-8");
       }
       return reply(toXcal(calendars, target), 200, "application/calendar+xml; charset=utf-8");
     } catch (error) {
