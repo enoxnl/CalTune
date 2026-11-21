@@ -670,7 +670,7 @@ function extraFieldsHtml(query, useForm) {
   }));
 }
 
-function applyExtras(calendars, extras) {
+function applyExtras(calendars, extras, target) {
   const include = extras.getAll("include-title").map(value => value.toLowerCase());
   const exclude = extras.getAll("exclude-title").map(value => value.toLowerCase());
   const calendarName = extras.get("calendar-name");
@@ -720,6 +720,10 @@ function applyExtras(calendars, extras) {
         event.children = event.children.filter(child =>
           child.name !== "valarm" || !child.properties.some(field => hidden.has(field.name)));
       }
+    }
+    if (target) {
+      calendar.properties = calendar.properties.filter(field => field.name !== "x-wr-timezone");
+      calendar.properties.push({ name: "x-wr-timezone", parameters: new Map(), value: target });
     }
     if (publishedTtl) {
       calendar.properties = calendar.properties.filter(field => field.name !== "x-published-ttl");
@@ -1102,7 +1106,7 @@ export default {
       const originalCalendars = preview ? calendarOverview(calendars) : null;
       const originals = preview ? new Map(calendarEvents(calendars).map(event =>
         [event, event.properties.map(property => ({ ...property }))])) : null;
-      if (extras.size) applyExtras(calendars, extras);
+      if (extras.size || target) applyExtras(calendars, extras, target);
       if (edits.size) editEventText(calendars, edits, "title", "summary");
       if (descriptionEdits.size && !extras.has("hide-description")) {
         editEventText(calendars, descriptionEdits, "description", "description");
