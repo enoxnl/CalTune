@@ -605,11 +605,11 @@ p[role=alert]{padding:1rem;background:#fff4f1;color:#61231d;border-radius:.45rem
 </style><main><h1>CalTune</h1><p>Create an .ics subscription link. You can override the time zone while keeping the local clock times.</p>
 <form action="/preview" method="get">
 <label>Source URL<input name="url" required value="${attribute(sourceUrl)}" placeholder="https://…/calendar.ics"></label>
+${titleFieldsHtml(edits, editTitles)}
 <div class="option-panel force-zone">
 <label class="force-option"><input type="checkbox" name="force" value="1"${force ? " checked" : ""}>Force timezone</label>
 <label class="zone-select">Target time zone<select name="timezone">${timeZoneOptions(target)}</select></label>
 </div>
-${titleFieldsHtml(edits, editTitles)}
 <button>Show calendar and events</button></form>
 ${result}</main></html>`;
 }
