@@ -391,7 +391,7 @@ async function download(url, originHost) {
 
 const attribute = value => escapeHtml(value).replace(/"/g, "&quot;");
 
-const MAX_TEXT_RULES = 12;
+const MAX_RULES = 12;
 
 function readTextEdits(query, key) {
   const edits = new URLSearchParams();
@@ -401,7 +401,7 @@ function readTextEdits(query, key) {
   if (key === "title") singleFields.push("title-remove");
   for (const name of [...singleFields, findKey, replaceKey]) {
     const values = query.getAll(name);
-    const limit = [findKey, replaceKey].includes(name) ? MAX_TEXT_RULES : 1;
+    const limit = [findKey, replaceKey].includes(name) ? MAX_RULES : 1;
     if (values.length > limit || values.some(value => value.length > 160 || /[\r\n]/.test(value))) {
       throw new RequestError(400, "Use up to 12 replacement rules and one line of up to 160 characters per field.");
     }
@@ -424,7 +424,7 @@ function readTextEdits(query, key) {
   }
   const legacyRemove = key === "title" ? query.get("title-remove") : "";
   if (legacyRemove?.trim()) {
-    if (edits.getAll(findKey).length >= MAX_TEXT_RULES) {
+    if (edits.getAll(findKey).length >= MAX_RULES) {
       throw new RequestError(400, "Use up to 12 replacement rules.");
     }
     edits.append(findKey, legacyRemove);
@@ -483,7 +483,7 @@ function optionTextInput(name, label, value = "", type = "text", maxLength = 160
 }
 
 function textRuleRow(key, find = "", replacement = "") {
-  return `<div class="edit-row replacement-rule">
+  return `<div class="edit-row rule-row replacement-rule">
 ${optionTextInput(`${key}-find`, "Find text", find)}
 ${optionTextInput(`${key}-replace`, "Replace with", replacement)}
 <button class="secondary" type="button" data-remove-rule aria-label="Remove replacement rule">Remove</button>
@@ -494,24 +494,24 @@ function textFieldsHtml(key, values, enabled) {
   const finds = values.getAll(`${key}-find`);
   const replacements = values.getAll(`${key}-replace`);
   const legacyRemove = key === "title" ? values.get("title-remove") : "";
-  if (legacyRemove && finds.length < MAX_TEXT_RULES) {
+  if (legacyRemove && finds.length < MAX_RULES) {
     replacements[finds.length] = "";
     finds.push(legacyRemove);
   }
-  const rows = Array.from({ length: Math.min(MAX_TEXT_RULES, Math.max(1, finds.length, replacements.length)) },
+  const rows = Array.from({ length: Math.min(MAX_RULES, Math.max(1, finds.length, replacements.length)) },
     (_, index) => textRuleRow(key, finds[index], replacements[index]));
   return `<div class="option-panel text-edits">
 <input type="hidden" name="${key}-form" value="1">
 <label class="force-option"><input class="text-edit-toggle" type="checkbox" name="edit-${key}s" value="1"${enabled ? " checked" : ""}>Edit event ${key}s</label>
-<div class="text-options">
+<div class="text-options" data-rule-editor>
 <div class="edit-row">
 ${optionTextInput(`${key}-prefix`, `Add before the ${key}`, values.get(`${key}-prefix`) || "")}
 ${optionTextInput(`${key}-suffix`, `Add after the ${key}`, values.get(`${key}-suffix`) || "")}
 </div>
 <p>Replacement rules run from top to bottom and match exact text. Leave “Replace with” blank to delete the matching text.</p>
-<div data-replacement-rules>${rows.join("")}</div>
-<template data-replacement-template>${textRuleRow(key)}</template>
-<button class="secondary" data-add-replacement-rule type="button">Add replacement rule</button>
+<div data-rule-list>${rows.join("")}</div>
+<template data-rule-template>${textRuleRow(key)}</template>
+<button class="secondary" data-add-rule type="button">Add replacement rule</button>
 </div></div>`;
 }
 
@@ -519,7 +519,7 @@ const eventStatuses = ["TENTATIVE", "CONFIRMED", "CANCELLED"];
 
 const extraOptions = [
   { toggle: "filter-events", label: "Filter events",
-    fields: [["include-title", "Title contains"], ["exclude-title", "Title excludes"]] },
+    fields: [["include-title", "Title contains"], ["exclude-title", "Title excludes"]], multiple: true },
   { toggle: "hide-details", label: "Hide event details",
     fields: [["hide-description", "Descriptions"], ["hide-location", "Locations"],
       ["hide-attendees", "Attendees and organizers"], ["hide-status", "Status"], ["hide-event-url", "Event URL"]], checkboxes: true },
@@ -542,12 +542,15 @@ function readExtras(query, useForm) {
     for (const [name, label] of option.fields) {
       const values = query.getAll(name);
       if (!values.length) continue;
-      const [value] = values;
-      const invalid = option.checkboxes ? value !== "1" : value.length > (option.url ? 2048 : 160) || /[\r\n]/.test(value);
-      if (values.length !== 1 || invalid || (value && option.choices && !option.choices.includes(value))) {
-        throw new RequestError(400, `Invalid value for ${label}.`);
+      const limit = option.multiple ? MAX_RULES : 1;
+      if (values.length > limit) throw new RequestError(400, `Too many values for ${label}.`);
+      for (const value of values) {
+        const invalid = option.checkboxes ? value !== "1" : value.length > (option.url ? 2048 : 160) || /[\r\n]/.test(value);
+        if (invalid || (value && option.choices && !option.choices.includes(value))) {
+          throw new RequestError(400, `Invalid value for ${label}.`);
+        }
+        if (value.trim()) result.append(name, value.trim());
       }
-      if (value.trim()) result.set(name, value.trim());
     }
     if (option.url) {
       const name = option.fields[0][0];
@@ -567,10 +570,25 @@ function readExtras(query, useForm) {
   return result;
 }
 
+function filterRuleFields(name, label, values) {
+  const row = (value = "") => `<div class="edit-row rule-row filter-rule">
+${optionTextInput(name, label, value)}
+<button class="secondary" type="button" data-remove-rule aria-label="Remove filter rule">Remove</button>
+</div>`;
+  const exclude = name === "exclude-title";
+  return `<fieldset class="filter-rules" data-rule-editor>
+<legend>${exclude ? "Exclude if any rule matches" : "Include if any rule matches"}</legend>
+<div data-rule-list>${(values.length ? values.slice(0, MAX_RULES) : [""]).map(row).join("")}</div>
+<template data-rule-template>${row()}</template>
+<button class="secondary" data-add-rule type="button">${exclude ? "Add exclusion rule" : "Add inclusion rule"}</button>
+</fieldset>`;
+}
+
 function extraFieldsHtml(query, useForm) {
   return Object.fromEntries(extraOptions.map(option => {
     const enabled = extraEnabled(query, useForm, option);
     const fields = option.fields.map(([name, label]) => {
+      if (option.multiple) return filterRuleFields(name, label, enabled ? query.getAll(name) : []);
       const value = enabled ? query.get(name) : "";
       if (option.choices) {
         const choices = option.choices.map(status => `<option value="${status}"${value === status ? " selected" : ""}>${status[0] + status.slice(1).toLowerCase()}</option>`).join("");
@@ -588,8 +606,8 @@ function extraFieldsHtml(query, useForm) {
 }
 
 function applyExtras(calendars, extras) {
-  const include = extras.get("include-title")?.toLowerCase();
-  const exclude = extras.get("exclude-title")?.toLowerCase();
+  const include = extras.getAll("include-title").map(value => value.toLowerCase());
+  const exclude = extras.getAll("exclude-title").map(value => value.toLowerCase());
   const calendarName = extras.get("calendar-name");
   const hidden = new Set();
   if (extras.has("hide-status")) hidden.add("status");
@@ -611,7 +629,7 @@ function applyExtras(calendars, extras) {
     hidden.add("organizer");
   }
   for (const calendar of calendars) {
-    if (include || exclude) {
+    if (include.length || exclude.length) {
       const value = (event, name) => event.properties.find(field => field.name === name)?.value;
       const series = new Map(calendar.children
         .filter(event => event.name === "vevent" && value(event, "uid") && !value(event, "recurrence-id"))
@@ -621,7 +639,7 @@ function applyExtras(calendars, extras) {
         const uid = value(event, "uid");
         const summary = series.has(uid) ? series.get(uid) : value(event, "summary");
         const title = unescapeText(summary || "").toLowerCase();
-        return (!include || title.includes(include)) && (!exclude || !title.includes(exclude));
+        return (!include.length || include.some(text => title.includes(text))) && !exclude.some(text => title.includes(text));
       });
     }
     if (hidden.size || replacements.length) {
@@ -773,10 +791,16 @@ select{appearance:none;padding-right:2.5rem;background:linear-gradient(45deg,tra
 .text-edits:has(.text-edit-toggle:checked) .text-options{display:block}
 .text-edits p{margin:.65rem 0}
 .edit-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,12rem),1fr));gap:.75rem}
+.filter-rules{min-width:0;margin:0;padding:.65rem;border:1px solid #cbd7e0;border-radius:.4rem}
+.filter-rules legend{font-weight:600;padding:0 .25rem}
+.filter-rule{grid-template-columns:minmax(0,1fr) auto;align-items:end;margin-bottom:.75rem}
 .replacement-rule{grid-template-columns:repeat(2,minmax(0,1fr)) auto;align-items:end;margin-bottom:.75rem}
 .secondary{background:white;color:#145361;border:1px solid #758a9a}
 .secondary:disabled{opacity:.5;cursor:default}
-@media(max-width:36rem){.replacement-rule{grid-template-columns:1fr}.replacement-rule button{justify-self:start}}
+@media(max-width:36rem){.filter-rules{min-width:0;margin:0;padding:.65rem;border:1px solid #cbd7e0;border-radius:.4rem}
+.filter-rules legend{font-weight:600;padding:0 .25rem}
+.filter-rule{grid-template-columns:minmax(0,1fr) auto;align-items:end;margin-bottom:.75rem}
+.replacement-rule{grid-template-columns:1fr}.replacement-rule button{justify-self:start}}
 button{border:0;background:#145361;color:white;font-weight:700;cursor:pointer}
 section{margin-top:1.5rem;padding:1.5rem;background:white;border:1px solid #cbd7e0;border-radius:1rem}
 section h2{margin-top:0}
@@ -833,17 +857,17 @@ for (const row of document.querySelectorAll(".event-comparison")) {
 const pageSelect = document.getElementById("preview-page");
 pageSelect?.addEventListener("change", () => pageSelect.form.requestSubmit());
 
-for (const editor of document.querySelectorAll(".text-edits")) {
-  const rules = editor.querySelector("[data-replacement-rules]");
-  const template = editor.querySelector("[data-replacement-template]");
-  const addRule = editor.querySelector("[data-add-replacement-rule]");
+for (const editor of document.querySelectorAll("[data-rule-editor]")) {
+  const rules = editor.querySelector("[data-rule-list]");
+  const template = editor.querySelector("[data-rule-template]");
+  const addRule = editor.querySelector("[data-add-rule]");
   function updateRuleButtons() {
     const count = rules.children.length;
-    addRule.disabled = count >= ${MAX_TEXT_RULES};
+    addRule.disabled = count >= ${MAX_RULES};
     for (const button of rules.querySelectorAll("[data-remove-rule]")) button.disabled = count === 1;
   }
   addRule.addEventListener("click", () => {
-    if (rules.children.length >= ${MAX_TEXT_RULES}) return;
+    if (rules.children.length >= ${MAX_RULES}) return;
     rules.append(template.content.cloneNode(true));
     updateRuleButtons();
     rules.lastElementChild.querySelector("input").focus();
@@ -851,7 +875,7 @@ for (const editor of document.querySelectorAll(".text-edits")) {
   rules.addEventListener("click", event => {
     const button = event.target.closest("[data-remove-rule]");
     if (!button || rules.children.length === 1) return;
-    const row = button.closest(".replacement-rule");
+    const row = button.closest(".rule-row");
     const next = row.nextElementSibling || row.previousElementSibling;
     row.remove();
     updateRuleButtons();
@@ -948,7 +972,7 @@ export default {
         if (target) calendarUrl.searchParams.set("forcetimezone", target);
         for (const [name, value] of edits) calendarUrl.searchParams.append(name, value);
         for (const [name, value] of descriptionEdits) calendarUrl.searchParams.append(name, value);
-        for (const [name, value] of extras) calendarUrl.searchParams.set(name, value);
+        for (const [name, value] of extras) calendarUrl.searchParams.append(name, value);
         const updated = new Set(calendarEvents(calendars));
         const result = previewResults(originals, updated, target, calendarUrl.href, query, extras.get("calendar-name"));
         return reply(page({ ...form, sourceUrl, target, edits, descriptionEdits, result }), 200, html);
