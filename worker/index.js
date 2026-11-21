@@ -1,4 +1,5 @@
 const BUILD_COMMIT = "";
+const CALTUNE_PRODUCT_ID = "-//enox.nl//CalTune//EN";
 const MAX_BYTES = 2 * 1024 * 1024;
 const appointmentFields = new Set(["dtstart", "dtend", "due", "recurrence-id", "rdate", "exdate", "trigger"]);
 const appointmentTypes = { trigger: "duration" };
@@ -670,7 +671,7 @@ function extraFieldsHtml(query, useForm) {
   }));
 }
 
-function applyExtras(calendars, extras, target) {
+function applyExtras(calendars, extras, target, keepProductId) {
   const include = extras.getAll("include-title").map(value => value.toLowerCase());
   const exclude = extras.getAll("exclude-title").map(value => value.toLowerCase());
   const calendarName = extras.get("calendar-name");
@@ -720,6 +721,10 @@ function applyExtras(calendars, extras, target) {
         event.children = event.children.filter(child =>
           child.name !== "valarm" || !child.properties.some(field => hidden.has(field.name)));
       }
+    }
+    if (!keepProductId) {
+      calendar.properties = calendar.properties.filter(field => field.name !== "prodid");
+      calendar.properties.push({ name: "prodid", parameters: new Map(), value: CALTUNE_PRODUCT_ID });
     }
     if (target) {
       calendar.properties = calendar.properties.filter(field => field.name !== "x-wr-timezone");
@@ -838,7 +843,7 @@ ${updated.has(event) ? eventCard(event.properties, "Updated", target)
     : '<div class="event-card filtered"><h4>Updated</h4><p>Excluded by the event filter.</p></div>'}
 </li>`).join("");
   const sourceView = new URL(calendarUrl);
-  sourceView.search = new URLSearchParams({ url: sourceView.searchParams.get("url"), view: "raw" });
+  sourceView.search = new URLSearchParams({ url: sourceView.searchParams.get("url"), "keep-prodid": "1", view: "raw" });
   const outputView = new URL(calendarUrl);
   outputView.searchParams.set("view", "raw");
   const names = originalCalendars.map((calendar, index) => `<dl class="calendar-comparison">
@@ -869,7 +874,7 @@ function previewPagination(query, currentPage, pageCount, eventCount) {
   const previewFields = ["url", "force", "timezone", "forcetimezone", "to", "title-form", "edit-titles",
     "title-prefix", "title-suffix", "title-find", "title-replace", "title-remove", "extras-form",
     "description-form", "edit-descriptions", "description-prefix", "description-suffix", "description-find", "description-replace",
-    "published-ttl-amount", "published-ttl-unit",
+    "published-ttl-amount", "published-ttl-unit", "keep-prodid",
     ...extraOptions.flatMap(option => [option.toggle, ...option.fields.map(([name]) => name)])];
   const fields = [...query].filter(([name]) => previewFields.includes(name)).map(([name, value]) =>
     `<input type="hidden" name="${attribute(name)}" value="${attribute(value)}">`).join("");
@@ -893,7 +898,7 @@ function timeZoneOptions(selected) {
     `<option value="${attribute(zone)}"${zone === active ? " selected" : ""}>${escapeHtml(zone)}</option>`).join("");
 }
 
-function page({ sourceUrl = "", target = "", force = false, edits = new URLSearchParams(), editTitles = false, descriptionEdits = new URLSearchParams(), editDescriptions = false, extraQuery = new URLSearchParams(), extraForm = false, result = "" } = {}) {
+function page({ sourceUrl = "", target = "", force = false, edits = new URLSearchParams(), editTitles = false, descriptionEdits = new URLSearchParams(), editDescriptions = false, keepProductId = false, extraQuery = new URLSearchParams(), extraForm = false, result = "" } = {}) {
   const extraPanels = extraFieldsHtml(extraQuery, extraForm);
   return `<!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -961,6 +966,9 @@ p[role=alert]{padding:1rem;background:#fff4f1;color:#61231d;border-radius:.45rem
 <label>Source URL<input name="url" required value="${attribute(sourceUrl)}" placeholder="https://…/calendar.ics"></label>
 <input type="hidden" name="extras-form" value="1">
 ${extraPanels["rename-calendar"]}
+<div class="option-panel">
+<label class="force-option"><input type="checkbox" name="keep-prodid" value="1"${keepProductId ? " checked" : ""}>Keep original product ID</label>
+</div>
 ${extraPanels["filter-events"]}
 ${textFieldsHtml("title", edits, editTitles)}
 ${textFieldsHtml("description", descriptionEdits, editDescriptions)}
@@ -1069,6 +1077,7 @@ export default {
       ? query.has("edit-descriptions")
       : [...query].some(([key, value]) => key.startsWith("description-") && value.trim());
     const extraForm = preview && query.has("extras-form");
+    const keepProductId = query.get("keep-prodid") === "1";
     const form = {
       sourceUrl: query.get("url") || "",
       target: force ? query.get(useForm ? "timezone" : zoneParameter) || "" : "",
@@ -1077,6 +1086,7 @@ export default {
       editTitles,
       descriptionEdits: editDescriptions ? query : new URLSearchParams(),
       editDescriptions,
+      keepProductId,
       extraQuery: query,
       extraForm
     };
@@ -1091,6 +1101,10 @@ export default {
       const values = query.getAll("url");
       if (values.length !== 1 || !values[0]) throw new RequestError(400, 'Provide the "url" parameter exactly once.');
       const [sourceUrl] = values;
+      const productIdOptions = query.getAll("keep-prodid");
+      if (productIdOptions.length && (productIdOptions.length !== 1 || !keepProductId)) {
+        throw new RequestError(400, 'Use "keep-prodid=1" to keep the original product ID.');
+      }
       const zones = force ? query.getAll(useForm ? "timezone" : zoneParameter) : [];
       if (force && (zones.length !== 1 || !zones[0])) throw new RequestError(400, "Select a target time zone.");
       const target = force ? timeZone(zones[0]) : "";
@@ -1101,12 +1115,12 @@ export default {
       const input = await download(url, path.hostname);
       const calendarType = path.pathname === "/calendar.ics" && query.get("view") === "raw"
         ? plain : "text/calendar; charset=utf-8";
-      if (!preview && !target && !edits.size && !descriptionEdits.size && !extras.size) return reply(input, 200, calendarType);
+      if (!preview && keepProductId && !target && !edits.size && !descriptionEdits.size && !extras.size) return reply(input, 200, calendarType);
       const calendars = parseCalendar(new TextDecoder().decode(input));
       const originalCalendars = preview ? calendarOverview(calendars) : null;
       const originals = preview ? new Map(calendarEvents(calendars).map(event =>
         [event, event.properties.map(property => ({ ...property }))])) : null;
-      if (extras.size || target) applyExtras(calendars, extras, target);
+      if (extras.size || target || !keepProductId) applyExtras(calendars, extras, target, keepProductId);
       if (edits.size) editEventText(calendars, edits, "title", "summary");
       if (descriptionEdits.size && !extras.has("hide-description")) {
         editEventText(calendars, descriptionEdits, "description", "description");
@@ -1115,6 +1129,7 @@ export default {
         const calendarUrl = new URL("/calendar.ics", path);
         calendarUrl.searchParams.set("url", sourceUrl);
         if (target) calendarUrl.searchParams.set("forcetimezone", target);
+        if (keepProductId) calendarUrl.searchParams.set("keep-prodid", "1");
         for (const [name, value] of edits) calendarUrl.searchParams.append(name, value);
         for (const [name, value] of descriptionEdits) calendarUrl.searchParams.append(name, value);
         for (const [name, value] of extras) calendarUrl.searchParams.append(name, value);
