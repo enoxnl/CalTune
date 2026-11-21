@@ -961,14 +961,11 @@ section h2{margin-top:0}
 footer{display:flex;flex-wrap:wrap;gap:.4rem 1rem;margin-top:1.5rem;padding:.8rem 0;border-top:1px solid #cbd7e0;font-size:.875rem}
 footer a{color:#145361}
 p[role=alert]{padding:1rem;background:#fff4f1;color:#61231d;border-radius:.45rem}
-</style><main><h1>CalTune</h1><p>Customize an existing calendar feed and get a new .ics subscription link. Rename the calendar, filter events, edit titles and descriptions, hide details, or override the time zone. Preview your changes before subscribing.</p>
+</style><main><h1>CalTune</h1><p>Customize an existing calendar feed and get a new .ics subscription link.</p>
 <form action="/preview" method="get">
 <label>Source URL<input name="url" required value="${attribute(sourceUrl)}" placeholder="https://…/calendar.ics"></label>
 <input type="hidden" name="extras-form" value="1">
 ${extraPanels["rename-calendar"]}
-<div class="option-panel">
-<label class="force-option"><input type="checkbox" name="keep-prodid" value="1"${keepProductId ? " checked" : ""}>Keep original product ID</label>
-</div>
 ${extraPanels["filter-events"]}
 ${textFieldsHtml("title", edits, editTitles)}
 ${textFieldsHtml("description", descriptionEdits, editDescriptions)}
@@ -979,6 +976,9 @@ ${extraPanels["set-published-ttl"]}
 <div class="option-panel force-zone">
 <label class="force-option"><input type="checkbox" name="force" value="1"${force ? " checked" : ""}>Force timezone</label>
 <label class="zone-select">Target time zone<select name="timezone">${timeZoneOptions(target)}</select></label>
+</div>
+<div class="option-panel">
+<label class="force-option"><input type="checkbox" name="keep-prodid" value="1"${keepProductId ? " checked" : ""}>Keep original product ID</label>
 </div>
 <button>Show calendar and events</button></form>
 ${result}
