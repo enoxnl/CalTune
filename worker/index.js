@@ -83,16 +83,12 @@ function parseCalendar(input) {
   return root.children;
 }
 
-function timeZone(name, status = 400) {
+function timeZone(name) {
   try {
     if (!/^[a-z][a-z0-9_+/-]*$/i.test(name)) throw new RangeError();
-    return new Intl.DateTimeFormat("en-GB", {
-      timeZone: name, calendar: "iso8601", numberingSystem: "latn", hourCycle: "h23",
-      year: "numeric", month: "2-digit", day: "2-digit",
-      hour: "2-digit", minute: "2-digit", second: "2-digit"
-    });
+    return new Intl.DateTimeFormat("en", { timeZone: name }).resolvedOptions().timeZone;
   } catch {
-    throw new RequestError(status, "Gebruik een geldige IANA-tijdzone, bijvoorbeeld Europe/Amsterdam.");
+    throw new RequestError(400, "Gebruik een geldige IANA-tijdzone, bijvoorbeeld Europe/Amsterdam.");
   }
 }
 
@@ -102,36 +98,6 @@ function extended(value) {
   const [, year, month, day, hour, minute, second, utc] = match;
   const date = `${year}-${month}-${day}`;
   return hour === undefined ? date : `${date}T${hour}:${minute}:${second}${utc || ""}`;
-}
-
-function wallTime(zone, instant) {
-  const parts = Object.fromEntries(zone.formatToParts(instant).map(({ type, value }) => [type, value]));
-  return `${parts.year.padStart(4, "0")}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}`;
-}
-
-function offsetAt(zone, instant) {
-  return Date.parse(wallTime(zone, instant) + "Z") - instant;
-}
-
-function convertTime(value, source, target) {
-  const input = extended(value);
-  const utc = input.endsWith("Z");
-  const wall = utc ? input.slice(0, -1) : input;
-  const nominal = Date.parse(wall + "Z");
-  if (!Number.isFinite(nominal) || new Date(nominal).toISOString().slice(0, 19) !== wall) {
-    throw new RequestError(422, "Ongeldige datum of tijd in de kalender.");
-  }
-  let instant = nominal;
-  if (!utc) {
-    // RFC 5545 uses the first instant in an overlap and the pre-transition offset in a gap.
-    const day = 86_400_000;
-    const earlierOffset = offsetAt(source, nominal - day);
-    const offsets = new Set([earlierOffset, offsetAt(source, nominal), offsetAt(source, nominal + day)]);
-    const matches = [...offsets].map(offset => nominal - offset)
-      .filter(candidate => wallTime(source, candidate) === wall);
-    instant = matches.length ? Math.min(...matches) : nominal - earlierOffset;
-  }
-  return wallTime(target, instant) + (target.resolvedOptions().timeZone === "UTC" ? "Z" : "");
 }
 
 const unescapeText = value => value.replace(/\\([nN,;\\])/g, (_, code) =>
@@ -154,24 +120,18 @@ function recurrence(value) {
     .map(part => element(name, xml(name === "until" ? extended(part) : part))).join("")).join("");
 }
 
-function propertyXml(property, source, target, preserveSchedule) {
+function propertyXml(property, target) {
   const { name, value } = property;
   const parameters = new Map(property.parameters);
-  const originalZone = parameters.get("tzid")?.[0];
   const type = parameters.get("value")?.[0].toLowerCase() || Object.hasOwn(types, name) && types[name]
     || (name.startsWith("x-") ? "unknown" : "text");
   parameters.delete("value");
   let formatTime = extended;
-  const scheduled = source && appointmentFields.has(name) && (type === "date-time" || type === "period");
-  if (scheduled && preserveSchedule && !originalZone && !/Z(?:$|[,/])/.test(value)) {
-    parameters.set("tzid", [source.resolvedOptions().timeZone]);
-  } else if (scheduled && !preserveSchedule) {
-    // Resolve a TZID only for local values, since a UTC value already identifies its instant.
-    let explicitZone;
-    formatTime = dateTime => convertTime(dateTime,
-      originalZone && !dateTime.endsWith("Z") ? explicitZone ??= timeZone(originalZone, 422) : source, target);
-    if (target.resolvedOptions().timeZone === "UTC") parameters.delete("tzid");
-    else parameters.set("tzid", [target.resolvedOptions().timeZone]);
+  if (target && appointmentFields.has(name) && (type === "date-time" || type === "period")) {
+    const utc = target === "UTC";
+    formatTime = dateTime => extended(dateTime).replace(/Z$/, "") + (utc ? "Z" : "");
+    if (utc) parameters.delete("tzid");
+    else parameters.set("tzid", [target]);
   }
   const paramXml = [...parameters].map(([key, values]) => element(key,
     values.map(item => element(Object.hasOwn(parameterTypes, key) ? parameterTypes[key] :
@@ -207,26 +167,17 @@ function propertyXml(property, source, target, preserveSchedule) {
   return element(name, (paramXml ? element("parameters", paramXml) : "") + body);
 }
 
-function componentXml(component, source, target, recurringIds, preserveSchedule = false) {
-  if (component.name === "vtimezone") source = null;
-  const uid = component.properties.find(property => property.name === "uid")?.value;
-  preserveSchedule ||= ["vevent", "vtodo", "vjournal"].includes(component.name) &&
-    (recurringIds.has(uid) || component.properties.some(property => ["rrule", "exrule"].includes(property.name)));
-  const properties = component.properties.map(property => propertyXml(property, source, target, preserveSchedule)).join("");
-  const children = component.children.map(child => componentXml(child, source, target, recurringIds, preserveSchedule)).join("");
+function componentXml(component, target) {
+  // Time-zone definitions describe transitions and keep their original timestamps.
+  if (component.name === "vtimezone") target = null;
+  const properties = component.properties.map(property => propertyXml(property, target)).join("");
+  const children = component.children.map(child => componentXml(child, target)).join("");
   return element(component.name, (properties ? element("properties", properties) : "") +
     (children ? element("components", children) : ""));
 }
 
-function toXcal(input, source, target) {
-  const calendars = parseCalendar(input);
-  const contents = calendars.map(calendar => {
-    const recurringIds = new Set(calendar.children
-      .filter(component => component.properties.some(property => ["rrule", "exrule"].includes(property.name)))
-      .map(component => component.properties.find(property => property.name === "uid")?.value)
-      .filter(Boolean));
-    return componentXml(calendar, source, target, recurringIds);
-  }).join("");
+function toXcal(input, target) {
+  const contents = parseCalendar(input).map(calendar => componentXml(calendar, target)).join("");
   return '<?xml version="1.0" encoding="UTF-8"?>\n<icalendar xmlns="urn:ietf:params:xml:ns:icalendar-2.0">' +
     contents + "</icalendar>\n";
 }
@@ -299,14 +250,14 @@ form{display:grid;gap:1rem;padding:1.5rem;background:white;border:1px solid #cbd
 label{display:grid;gap:.3rem;font-weight:600}input,button{font:inherit;border-radius:.45rem;padding:.65rem .8rem}
 input{width:100%;border:1px solid #758a9a;color:inherit}button{border:0;background:#145361;color:white;font-weight:700;cursor:pointer}
 code{overflow-wrap:anywhere}
-</style><main><h1>FixiCal</h1><p>Zet de tijden van een iCalendar-feed om en open het resultaat als xCal (XML).</p>
+</style><main><h1>FixiCal</h1><p>Vervang de tijdzone van afspraken en behoud de kloktijden. Het resultaat is xCal (XML).</p>
 <form action="/convert" method="get">
 <label>Bron-URL<input name="url" required placeholder="https://…/kalender.ics"></label>
 <label>Brontijdzone<input name="from" required value="Europe/Amsterdam"></label>
 <label>Doeltijdzone<input name="to" required value="Europe/Amsterdam"></label>
 <button>Open xCal</button></form>
 <p>API: <code>GET /convert?url=…&amp;from=…&amp;to=…</code></p>
-<p>Afspraken die de hele dag duren behouden hun datum. Reeksen met herhaalregels behouden hun oorspronkelijke tijdzone.</p>
+<p>Afspraken die de hele dag duren behouden hun datum.</p>
 </main></html>`;
 
 function reply(body, status, type, extra = {}) {
@@ -331,11 +282,11 @@ export default {
         return values[0];
       });
       const [sourceUrl, from, to] = parameters;
-      const source = timeZone(from);
+      timeZone(from);
       const target = timeZone(to);
       const url = validateSource(sourceUrl, path.hostname);
       const input = await download(url, path.hostname);
-      return reply(toXcal(input, source, target), 200, "application/calendar+xml; charset=utf-8");
+      return reply(toXcal(input, target), 200, "application/calendar+xml; charset=utf-8");
     } catch (error) {
       if (error instanceof RequestError) return reply(error.message, error.status, plain);
       if (error.name === "TimeoutError" || error.name === "AbortError") {
