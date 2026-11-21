@@ -530,7 +530,8 @@ const availability = { OPAQUE: "Busy", TRANSPARENT: "Free" };
 const extraOptions = [
   { toggle: "filter-events", label: "Filter events",
     fields: [["days-back", "Days back", "days"], ["days-ahead", "Days ahead", "days"],
-      ["include-title", "Title contains", "repeat"], ["exclude-title", "Title excludes", "repeat"]] },
+      ["include-title", "Title contains", "repeat"], ["exclude-title", "Title excludes", "repeat"],
+      ["keep-series", "Keep recurring series unchanged", "flag"]] },
   { toggle: "hide-details", label: "Hide event details",
     fields: [["hide-description", "Descriptions"], ["hide-location", "Locations"],
       ["hide-attendees", "Attendees and organizers"], ["hide-status", "Status"], ["hide-event-url", "Event URL"]], checkboxes: true },
@@ -613,7 +614,7 @@ function readExtras(query, useForm) {
       const limit = kind === "repeat" ? MAX_RULES : 1;
       if (values.length > limit) throw new RequestError(400, `Too many values for ${label}.`);
       for (const value of values) {
-        const invalid = option.checkboxes ? value !== "1" : value.length > (option.url ? 2048 : 160) || /[\r\n]/.test(value);
+        const invalid = (option.checkboxes || kind === "flag") ? value !== "1" : value.length > (option.url ? 2048 : 160) || /[\r\n]/.test(value);
         const invalidNumber = kind === "days" && value.trim() &&
           (!/^\d+$/.test(value.trim()) || !Number.isSafeInteger(Number(value)));
         if (invalid || invalidNumber || (value && option.choices && !option.choices.includes(value))) {
@@ -677,7 +678,7 @@ function extraFieldsHtml(query, useForm) {
         return `<label>${label}<input name="${name}" type="number" min="0" step="1" value="${attribute(value || "")}"></label>`;
       }
       if (option.url) return optionTextInput(name, label, value || "", "url", 2048);
-      if (!option.checkboxes) return optionTextInput(name, label, value || "");
+      if (!option.checkboxes && kind !== "flag") return optionTextInput(name, label, value || "");
       return `<label class="force-option"><input type="checkbox" name="${name}" value="1"${value === "1" ? " checked" : ""}>${label}</label>`;
     });
     const content = option.toggle === "filter-events"
@@ -687,7 +688,8 @@ function extraFieldsHtml(query, useForm) {
 <div class="edit-row">${fields.slice(0, 2).join("")}</div>
 </fieldset>
 <p>Title rules match the original event title, regardless of capitalization.</p>
-${fields.slice(2).join("")}`
+${fields.slice(2, 4).join("")}
+${fields[4]}`
       : fields.join("");
     return [option.toggle, `<div class="option-panel extra-option">
 <label class="force-option"><input class="extra-toggle" type="checkbox" name="${option.toggle}" value="1"${enabled ? " checked" : ""}>${option.label}</label>
@@ -740,21 +742,22 @@ function relativeDay(day) {
   return day < 0 ? `${dayCount(-day)} ago` : `In ${dayCount(day)}`;
 }
 
-function applyDateRange(calendar, range, target, now) {
+function applyDateRange(calendar, range, target, now, protectedEvents) {
   const today = calendarToday(calendar, now, target);
   const lower = range.back === null ? -Infinity : today - range.back;
   const upper = range.ahead === null ? Infinity : today + range.ahead;
   const fits = day => day !== null && day >= lower && day <= upper;
   const lowerOnly = upper === Infinity;
-  const events = calendar.children.filter(event => event.name === "vevent");
+  const events = calendar.children.filter(event => event.name === "vevent" && !protectedEvents.has(event));
   const get = (event, name) => event.properties?.find(field => field.name === name);
   const masters = events.filter(event => !get(event, "recurrence-id") && (get(event, "rrule") || get(event, "rdate")));
   if (!masters.length) {
-    calendar.children = calendar.children.filter(event => event.name !== "vevent" || fits(eventStartDay(event)));
+    calendar.children = calendar.children.filter(event => event.name !== "vevent" || protectedEvents.has(event) || fits(eventStartDay(event)));
     return;
   }
 
-  const parsed = new ICAL.Component(ICAL.parse(toIcs([calendar], ""))).getAllSubcomponents("vevent");
+  const source = { ...calendar, children: calendar.children.filter(event => !protectedEvents.has(event)) };
+  const parsed = new ICAL.Component(ICAL.parse(toIcs([source], ""))).getAllSubcomponents("vevent");
   const components = new Map(events.map((event, index) => [event, parsed[index]]));
   const overrides = new Map();
   for (const event of events) {
@@ -871,8 +874,17 @@ function applyDateRange(calendar, range, target, now) {
     }
   }
 
-  calendar.children = calendar.children.filter(event => event.name !== "vevent" ||
+  calendar.children = calendar.children.filter(event => event.name !== "vevent" || protectedEvents.has(event) ||
     (handled.has(event) ? retained.has(event) : fits(eventStartDay(event))));
+}
+
+function recurringEvents(calendar) {
+  const events = calendar.children.filter(event => event.name === "vevent");
+  const marked = new Set(events.filter(event =>
+    event.properties.some(field => ["rrule", "rdate", "recurrence-id"].includes(field.name))));
+  const uid = event => event.properties.find(field => field.name === "uid")?.value;
+  const ids = new Set([...marked].map(uid).filter(Boolean));
+  return new Set(events.filter(event => marked.has(event) || ids.has(uid(event))));
 }
 
 function applyExtras(calendars, extras, target, range, now) {
@@ -900,13 +912,14 @@ function applyExtras(calendars, extras, target, range, now) {
     hidden.add("organizer");
   }
   for (const calendar of calendars) {
+    const protectedEvents = extras.has("keep-series") ? recurringEvents(calendar) : new Set();
     if (include.length || exclude.length) {
       const value = (event, name) => event.properties.find(field => field.name === name)?.value;
       const series = new Map(calendar.children
         .filter(event => event.name === "vevent" && value(event, "uid") && !value(event, "recurrence-id"))
         .map(event => [value(event, "uid"), value(event, "summary")]));
       calendar.children = calendar.children.filter(event => {
-        if (event.name !== "vevent") return true;
+        if (event.name !== "vevent" || protectedEvents.has(event)) return true;
         const uid = value(event, "uid");
         const summary = series.has(uid) ? series.get(uid) : value(event, "summary");
         const title = unescapeText(summary || "").toLowerCase();
@@ -915,7 +928,7 @@ function applyExtras(calendars, extras, target, range, now) {
     }
     if (range.back !== null || range.ahead !== null) {
       try {
-        applyDateRange(calendar, range, target, now);
+        applyDateRange(calendar, range, target, now, protectedEvents);
       } catch (error) {
         if (error instanceof RequestError) throw error;
         throw new RequestError(422, "Could not filter the recurrence rules in this calendar.");
