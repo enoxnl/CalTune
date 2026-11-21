@@ -529,6 +529,8 @@ const eventStatuses = ["TENTATIVE", "CONFIRMED", "CANCELLED"];
 const extraOptions = [
   { toggle: "filter-events", label: "Filter events",
     fields: [["include-title", "Title contains"], ["exclude-title", "Title excludes"]], multiple: true },
+  { toggle: "limit-date-range", label: "Limit event date range",
+    fields: [["days-back", "Days back"], ["days-ahead", "Days ahead"]], wholeNumbers: true },
   { toggle: "hide-details", label: "Hide event details",
     fields: [["hide-description", "Descriptions"], ["hide-location", "Locations"],
       ["hide-attendees", "Attendees and organizers"], ["hide-status", "Status"], ["hide-event-url", "Event URL"]], checkboxes: true },
@@ -610,11 +612,16 @@ function readExtras(query, useForm) {
       if (values.length > limit) throw new RequestError(400, `Too many values for ${label}.`);
       for (const value of values) {
         const invalid = option.checkboxes ? value !== "1" : value.length > (option.url ? 2048 : 160) || /[\r\n]/.test(value);
-        if (invalid || (value && option.choices && !option.choices.includes(value))) {
+        const invalidNumber = option.wholeNumbers && value.trim() &&
+          (!/^\d+$/.test(value.trim()) || !Number.isSafeInteger(Number(value)));
+        if (invalid || invalidNumber || (value && option.choices && !option.choices.includes(value))) {
           throw new RequestError(400, `Invalid value for ${label}.`);
         }
         if (value.trim()) result.append(name, value.trim());
       }
+    }
+    if (option.wholeNumbers && !option.fields.some(([name]) => result.has(name))) {
+      throw new RequestError(400, "Enter the number of days back, ahead, or both.");
     }
     if (option.toggle === "set-published-ttl") {
       const original = result.get("published-ttl") || "";
@@ -667,19 +674,64 @@ function extraFieldsHtml(query, useForm) {
         const choices = option.choices.map(status => `<option value="${status}"${value === status ? " selected" : ""}>${status[0] + status.slice(1).toLowerCase()}</option>`).join("");
         return `<label>${label}<select name="${name}"><option value="">Select a status</option>${choices}</select></label>`;
       }
+      if (option.wholeNumbers) {
+        return `<label>${label}<input name="${name}" type="number" min="0" step="1" value="${attribute(value || "")}"></label>`;
+      }
       if (option.url) return optionTextInput(name, label, value || "", "url", 2048);
       if (!option.checkboxes) return optionTextInput(name, label, value || "");
       return `<label class="force-option"><input type="checkbox" name="${name}" value="1"${value === "1" ? " checked" : ""}>${label}</label>`;
     }).join("");
-    const hint = option.toggle === "filter-events" ? "Matches the original event title, regardless of capitalization." : "";
+    const hint = option.toggle === "filter-events" ? "Matches the original event title, regardless of capitalization."
+      : option.wholeNumbers ? "Use 0 for today. Leave a side blank for no limit. The range uses each event’s start date." : "";
     return [option.toggle, `<div class="option-panel extra-option">
 <label class="force-option"><input class="extra-toggle" type="checkbox" name="${option.toggle}" value="1"${enabled ? " checked" : ""}>${option.label}</label>
-${optionSettings(option.label, `<div class="extra-fields">${hint ? `<p>${hint}</p>` : ""}${fields}</div>`)}
+${optionSettings(option.label, `<div class="extra-fields">${hint ? `<p>${hint}</p>` : ""}${option.wholeNumbers ? `<div class="edit-row">${fields}</div>` : fields}</div>`)}
 </div>`];
   }));
 }
 
-function applyExtras(calendars, extras, target) {
+const MS_PER_DAY = 86_400_000;
+
+function calendarToday(calendar, now, target = "") {
+  const zone = target || calendar.properties.find(field => field.name === "x-wr-timezone")?.value || "UTC";
+  let format;
+  try {
+    format = new Intl.DateTimeFormat("en", { timeZone: zone, calendar: "iso8601",
+      numberingSystem: "latn", year: "numeric", month: "2-digit", day: "2-digit" });
+  } catch {
+    return Math.floor(now / MS_PER_DAY);
+  }
+  const parts = Object.fromEntries(format.formatToParts(now).map(({ type, value }) => [type, value]));
+  return Date.parse(`${parts.year.padStart(4, "0")}-${parts.month}-${parts.day}T00:00:00Z`) / MS_PER_DAY;
+}
+
+function eventStartDay(event) {
+  const value = event.properties.find(field => field.name === "dtstart")?.value;
+  const match = /^(\d{4})(\d{2})(\d{2})(?:$|T)/.exec(value || "");
+  if (!match) return null;
+  const [, year, month, day] = match;
+  const date = Date.parse(`${year}-${month}-${day}T00:00:00Z`);
+  return Number.isFinite(date) ? date / MS_PER_DAY : null;
+}
+
+function eventRange(extras) {
+  return {
+    back: extras.has("days-back") ? Number(extras.get("days-back")) : null,
+    ahead: extras.has("days-ahead") ? Number(extras.get("days-ahead")) : null
+  };
+}
+
+function dayCount(days) {
+  return `${days} ${days === 1 ? "day" : "days"}`;
+}
+
+function relativeDay(day) {
+  if (day === null) return "No dated events";
+  if (day === 0) return "Today";
+  return day < 0 ? `${dayCount(-day)} ago` : `In ${dayCount(day)}`;
+}
+
+function applyExtras(calendars, extras, target, range, now) {
   const include = extras.getAll("include-title").map(value => value.toLowerCase());
   const exclude = extras.getAll("exclude-title").map(value => value.toLowerCase());
   const calendarName = extras.get("calendar-name");
@@ -715,6 +767,15 @@ function applyExtras(calendars, extras, target) {
         const summary = series.has(uid) ? series.get(uid) : value(event, "summary");
         const title = unescapeText(summary || "").toLowerCase();
         return (!include.length || include.some(text => title.includes(text))) && !exclude.some(text => title.includes(text));
+      });
+    }
+    if (range.back !== null || range.ahead !== null) {
+      const today = calendarToday(calendar, now, target);
+      calendar.children = calendar.children.filter(event => {
+        if (event.name !== "vevent") return true;
+        const start = eventStartDay(event);
+        return start !== null && (range.back === null || today - start <= range.back) &&
+          (range.ahead === null || start - today <= range.ahead);
       });
     }
     if (hidden.size || replacements.length) {
@@ -795,7 +856,7 @@ function eventCard(properties, label, target) {
 </div>`;
 }
 
-function calendarOverview(calendars) {
+function calendarOverview(calendars, now) {
   return calendars.map(calendar => {
     const value = (...names) => {
       for (const name of names) {
@@ -804,10 +865,23 @@ function calendarOverview(calendars) {
       }
       return "";
     };
+    const events = calendar.children.filter(component => component.name === "vevent");
+    const today = calendarToday(calendar, now);
+    let oldest = null;
+    let newest = null;
+    for (const event of events) {
+      const day = eventStartDay(event);
+      if (day === null) continue;
+      const days = day - today;
+      oldest = oldest === null ? days : Math.min(oldest, days);
+      newest = newest === null ? days : Math.max(newest, days);
+    }
     return {
       name: value("name", "x-wr-calname") || "No calendar name",
+      oldest,
+      newest,
       details: [
-        ["Events", calendar.children.filter(component => component.name === "vevent").length],
+        ["Events", events.length],
         ["Suggested refresh interval", humanDuration(value("x-published-ttl")) || "Not set"],
         ["Refresh interval", humanDuration(value("refresh-interval"))],
         ["Description", value("description", "x-wr-caldesc")],
@@ -822,14 +896,15 @@ function calendarOverview(calendars) {
   });
 }
 
-function calendarCard(label, { name, details }) {
+function calendarCard(label, { name, details, oldest, newest }, rangeLabel = "") {
   const terms = details.map(([term, value]) => `<dt>${term}</dt><dd>${escapeHtml(value)}</dd>`).join("");
-  return `<div class="event-card"><dt>${label}</dt><dd>${escapeHtml(name)}
+  return `<div class="event-card"><dt>${label}</dt><dd>${escapeHtml(name)}${rangeLabel ? ` <span class="range-label">(${escapeHtml(rangeLabel)})</span>` : ""}
+<p class="calendar-event-range"><strong>Oldest event:</strong> ${relativeDay(oldest)}<br><strong>Latest event:</strong> ${relativeDay(newest)}</p>
 <details><summary>Details</summary><div class="event-detail-panel"><dl>${terms}</dl></div></details>
 </dd></div>`;
 }
 
-function previewResults(originals, updated, target, calendarUrl, query, originalCalendars, updatedCalendars) {
+function previewResults(originals, updated, target, calendarUrl, query, originalCalendars, updatedCalendars, range) {
   // Sort by the local start shown on the comparison cards.
   const events = [...originals].map(([event, properties]) => ({
     event,
@@ -862,9 +937,13 @@ ${updated.has(event) ? eventCard(event.properties, "Updated", target)
   sourceView.search = new URLSearchParams({ url: sourceView.searchParams.get("url"), view: "source" });
   const outputView = new URL(calendarUrl);
   outputView.searchParams.set("view", "raw");
+  const rangeLabel = [
+    range.back === null ? "" : `${dayCount(range.back)} back`,
+    range.ahead === null ? "" : `${dayCount(range.ahead)} ahead`
+  ].filter(Boolean).join(", ");
   const names = originalCalendars.map((calendar, index) => `<dl class="calendar-comparison">
 ${calendarCard("Original calendar name", calendar)}
-${calendarCard("Updated calendar name", updatedCalendars[index])}
+${calendarCard("Updated calendar name", updatedCalendars[index], rangeLabel)}
 </dl>`).join("");
   return `<section aria-labelledby="result">
 <h2 id="result">Calendar</h2>
@@ -971,6 +1050,7 @@ section h2{margin-top:0}
 .events{margin:0;padding:0;list-style:none}
 .calendar-comparison,.event-comparison{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.65rem}
 .calendar-comparison dt{font-weight:600;font-size:.875rem}.calendar-comparison dd{margin:0}
+.calendar-event-range,.range-label{font-size:.875rem}.range-label{color:#475b6b}
 .event-comparison{padding:.65rem 0;border-top:1px solid #cbd7e0}
 .event-card{min-width:0;border:1px solid #cbd7e0;border-radius:.5rem;padding:.75rem;overflow-wrap:anywhere}
 .event-card h4{margin:0 0 .3rem;font-size:.875rem}.event-card details{margin-top:.45rem}
@@ -994,6 +1074,7 @@ p[role=alert]{padding:1rem;background:#fff4f1;color:#61231d;border-radius:.45rem
 <input type="hidden" name="extras-form" value="1">
 ${extraPanels["rename-calendar"]}
 ${extraPanels["filter-events"]}
+${extraPanels["limit-date-range"]}
 ${textFieldsHtml("title", edits, editTitles)}
 ${textFieldsHtml("description", descriptionEdits, editDescriptions)}
 ${extraPanels["hide-details"]}
@@ -1186,10 +1267,12 @@ export default {
       const input = await download(url, path.hostname);
       const calendarType = view === "raw" ? plain : "text/calendar; charset=utf-8";
       const calendars = parseCalendar(new TextDecoder().decode(input));
-      const originalCalendars = preview ? calendarOverview(calendars) : null;
+      const now = Date.now();
+      const range = eventRange(extras);
+      const originalCalendars = preview ? calendarOverview(calendars, now) : null;
       const originals = preview ? new Map(calendarEvents(calendars).map(event =>
         [event, event.properties.map(property => ({ ...property }))])) : null;
-      applyExtras(calendars, extras, target);
+      applyExtras(calendars, extras, target, range, now);
       if (edits.size) editEventText(calendars, edits, "title", "summary");
       if (descriptionEdits.size && !extras.has("hide-description")) {
         editEventText(calendars, descriptionEdits, "description", "description");
@@ -1202,7 +1285,7 @@ export default {
         for (const [name, value] of descriptionEdits) calendarUrl.searchParams.append(name, value);
         for (const [name, value] of extras) calendarUrl.searchParams.append(name, value);
         const updated = new Set(calendarEvents(calendars));
-        const result = previewResults(originals, updated, target, calendarUrl.href, query, originalCalendars, calendarOverview(calendars));
+        const result = previewResults(originals, updated, target, calendarUrl.href, query, originalCalendars, calendarOverview(calendars, now), range);
         return reply(page({ ...form, sourceUrl, target, edits, descriptionEdits, result }), 200, html);
       }
       return reply(toIcs(calendars, target), 200, calendarType);
