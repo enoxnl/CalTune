@@ -22,3 +22,5 @@ Gebruik `force-status` met `TENTATIVE`, `CONFIRMED` of `CANCELLED` om alle afspr
 Gebruik `event-url` om bij elke afspraak dezelfde HTTP(S)-link in te stellen. `hide-event-url=1` verwijdert links uit afspraken en heeft voorrang.
 
 Beschrijvingstekst bewerk je met `description-find` en `description-replace`, `description-prefix` en `description-suffix`. De regels werken hetzelfde als bij titels. `hide-description=1` heeft voorrang.
+
+Gebruik `published-ttl` met een positieve iCalendar-duur, zoals `PT30M`, om `X-PUBLISHED-TTL` van de kalender te wijzigen. Agenda-apps bepalen zelf wanneer ze de feed opnieuw ophalen.

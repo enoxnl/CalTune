@@ -527,6 +527,8 @@ const extraOptions = [
     fields: [["force-status", "Target status"]], choices: eventStatuses },
   { toggle: "force-event-url", label: "Force event URL",
     fields: [["event-url", "Replacement event URL"]], url: true },
+  { toggle: "set-published-ttl", label: "Set published TTL",
+    fields: [["published-ttl", "X-PUBLISHED-TTL"]] },
   { toggle: "rename-calendar", label: "Rename calendar",
     fields: [["calendar-name", "Calendar name"]] }
 ];
@@ -551,6 +553,14 @@ function readExtras(query, useForm) {
         }
         if (value.trim()) result.append(name, value.trim());
       }
+    }
+    if (option.toggle === "set-published-ttl") {
+      const ttl = result.get("published-ttl")?.toUpperCase() || "";
+      const duration = /^\+?P(?:\d+W|\d+D(?:T(?=\d)(?:\d+H)?(?:\d+M)?(?:\d+S)?)?|T(?=\d)(?:\d+H)?(?:\d+M)?(?:\d+S)?)$/;
+      if (!duration.test(ttl) || !/[1-9]/.test(ttl)) {
+        throw new RequestError(400, "Enter a positive iCalendar duration, such as PT30M, PT1H, or P1D.");
+      }
+      result.set("published-ttl", ttl);
     }
     if (option.url) {
       const name = option.fields[0][0];
@@ -598,9 +608,11 @@ function extraFieldsHtml(query, useForm) {
       if (!option.checkboxes) return optionTextInput(name, label, value || "");
       return `<label class="force-option"><input type="checkbox" name="${name}" value="1"${value === "1" ? " checked" : ""}>${label}</label>`;
     }).join("");
+    const hint = option.toggle === "filter-events" ? "Matches the original event title, regardless of capitalization."
+      : option.toggle === "set-published-ttl" ? "Use an iCalendar duration such as PT30M, PT1H, or P1D." : "";
     return [option.toggle, `<div class="option-panel extra-option">
 <label class="force-option"><input class="extra-toggle" type="checkbox" name="${option.toggle}" value="1"${enabled ? " checked" : ""}>${option.label}</label>
-<div class="extra-fields">${option.toggle === "filter-events" ? "<p>Matches the original event title, regardless of capitalization.</p>" : ""}${fields}</div>
+<div class="extra-fields">${hint ? `<p>${hint}</p>` : ""}${fields}</div>
 </div>`];
   }));
 }
@@ -609,6 +621,7 @@ function applyExtras(calendars, extras) {
   const include = extras.getAll("include-title").map(value => value.toLowerCase());
   const exclude = extras.getAll("exclude-title").map(value => value.toLowerCase());
   const calendarName = extras.get("calendar-name");
+  const publishedTtl = extras.get("published-ttl");
   const hidden = new Set();
   if (extras.has("hide-status")) hidden.add("status");
   if (extras.has("hide-event-url")) hidden.add("url");
@@ -654,6 +667,10 @@ function applyExtras(calendars, extras) {
         event.children = event.children.filter(child =>
           child.name !== "valarm" || !child.properties.some(field => hidden.has(field.name)));
       }
+    }
+    if (publishedTtl) {
+      calendar.properties = calendar.properties.filter(field => field.name !== "x-published-ttl");
+      calendar.properties.push({ name: "x-published-ttl", parameters: new Map(), value: publishedTtl });
     }
     if (calendarName) {
       calendar.properties = calendar.properties.filter(field => !["name", "x-wr-calname"].includes(field.name));
@@ -706,17 +723,42 @@ function eventCard(properties, label, target) {
 </div>`;
 }
 
-function calendarNames(calendars) {
+function calendarOverview(calendars) {
   return calendars.map(calendar => {
-    for (const name of ["name", "x-wr-calname"]) {
-      const value = calendar.properties.find(property => property.name === name && property.value.trim())?.value;
-      if (value) return unescapeText(value);
-    }
-    return "No calendar name";
+    const value = (...names) => {
+      for (const name of names) {
+        const property = calendar.properties.find(field => field.name === name && field.value.trim());
+        if (property) return unescapeText(property.value);
+      }
+      return "";
+    };
+    return {
+      name: value("name", "x-wr-calname") || "No calendar name",
+      details: [
+        ["Events", calendar.children.filter(component => component.name === "vevent").length],
+        ["X-PUBLISHED-TTL", value("x-published-ttl") || "Not set"],
+        ["Refresh interval", value("refresh-interval")],
+        ["Description", value("description", "x-wr-caldesc")],
+        ["Time zone", value("x-wr-timezone")],
+        ["iCalendar version", value("version")],
+        ["Calendar scale", value("calscale")],
+        ["Method", value("method")],
+        ["Product ID", value("prodid")],
+        ["Calendar URL", value("url")],
+        ["Source", value("source")]
+      ].filter(([, detail]) => detail !== "")
+    };
   });
 }
 
-function previewResults(originals, updated, target, calendarUrl, query, originalNames, updatedNames) {
+function calendarCard(label, { name, details }) {
+  const terms = details.map(([term, value]) => `<dt>${term}</dt><dd>${escapeHtml(value)}</dd>`).join("");
+  return `<div class="event-card"><dt>${label}</dt><dd>${escapeHtml(name)}
+<details><summary>Details</summary><div class="event-detail-panel"><dl>${terms}</dl></div></details>
+</dd></div>`;
+}
+
+function previewResults(originals, updated, target, calendarUrl, query, originalCalendars, updatedCalendars) {
   const events = [...originals.keys()];
   const pageSize = 10;
   const pageCount = Math.max(1, Math.ceil(events.length / pageSize));
@@ -742,9 +784,9 @@ ${updated.has(event) ? eventCard(event.properties, "Updated", target)
   sourceView.search = new URLSearchParams({ url: sourceView.searchParams.get("url"), view: "raw" });
   const outputView = new URL(calendarUrl);
   outputView.searchParams.set("view", "raw");
-  const names = originalNames.map((name, index) => `<dl class="calendar-comparison">
-<div class="event-card"><dt>Original calendar name</dt><dd>${escapeHtml(name)}</dd></div>
-<div class="event-card"><dt>Updated calendar name</dt><dd>${escapeHtml(updatedNames[index])}</dd></div>
+  const names = originalCalendars.map((calendar, index) => `<dl class="calendar-comparison">
+${calendarCard("Original calendar name", calendar)}
+${calendarCard("Updated calendar name", updatedCalendars[index])}
 </dl>`).join("");
   return `<section aria-labelledby="result">
 <h2 id="result">Calendar</h2>
@@ -867,6 +909,7 @@ ${textFieldsHtml("description", descriptionEdits, editDescriptions)}
 ${extraPanels["hide-details"]}
 ${extraPanels["force-event-status"]}
 ${extraPanels["force-event-url"]}
+${extraPanels["set-published-ttl"]}
 <div class="option-panel force-zone">
 <label class="force-option"><input type="checkbox" name="force" value="1"${force ? " checked" : ""}>Force timezone</label>
 <label class="zone-select">Target time zone<select name="timezone">${timeZoneOptions(target)}</select></label>
@@ -879,7 +922,7 @@ ${BUILD_COMMIT ? `<span>Git commit <code title="${BUILD_COMMIT}">${BUILD_COMMIT.
 }
 
 const appScript = `
-for (const row of document.querySelectorAll(".event-comparison")) {
+for (const row of document.querySelectorAll(".event-comparison, .calendar-comparison")) {
   const [original, updated] = row.querySelectorAll("details");
   if (!original || !updated) continue;
   original.addEventListener("toggle", () => { updated.open = original.open; });
@@ -992,7 +1035,7 @@ export default {
         ? plain : "text/calendar; charset=utf-8";
       if (!preview && !target && !edits.size && !descriptionEdits.size && !extras.size) return reply(input, 200, calendarType);
       const calendars = parseCalendar(new TextDecoder().decode(input));
-      const originalNames = preview ? calendarNames(calendars) : null;
+      const originalCalendars = preview ? calendarOverview(calendars) : null;
       const originals = preview ? new Map(calendarEvents(calendars).map(event =>
         [event, event.properties.map(property => ({ ...property }))])) : null;
       if (extras.size) applyExtras(calendars, extras);
@@ -1008,7 +1051,7 @@ export default {
         for (const [name, value] of descriptionEdits) calendarUrl.searchParams.append(name, value);
         for (const [name, value] of extras) calendarUrl.searchParams.append(name, value);
         const updated = new Set(calendarEvents(calendars));
-        const result = previewResults(originals, updated, target, calendarUrl.href, query, originalNames, calendarNames(calendars));
+        const result = previewResults(originals, updated, target, calendarUrl.href, query, originalCalendars, calendarOverview(calendars));
         return reply(page({ ...form, sourceUrl, target, edits, descriptionEdits, result }), 200, html);
       }
       return reply(toIcs(calendars, target), 200, calendarType);
