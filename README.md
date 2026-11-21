@@ -1,32 +1,43 @@
 # CalTune
 
-Stateless Cloudflare Worker. De Worker leest de bron bij elke aanvraag en slaat kalendergegevens niet op.
+[CalTune](https://caltune.enox.nl) maakt van een openbare iCalendar-feed een aangepaste `.ics`-abonnementslink. De app draait als stateless Cloudflare Worker, haalt de bron bij elke aanvraag op en bewaart geen kalendergegevens.
 
-Het formulier toont een .ics-abonnementslink voor agenda-apps en tien afspraken per pagina, gesorteerd op lokale begindatum en -tijd. De API is ook rechtstreeks beschikbaar:
+## Een kalender aanpassen
+
+1. Plak een openbare HTTPS- of webcal-link in **Source URL**, of laad een eerder gemaakte CalTune-link via **Import settings from existing URL**.
+2. Vink aan welke wijzigingen je wilt toepassen. Via **Settings** kun je de opties per onderdeel in- en uitklappen.
+3. Klik **Show calendar and events**. De preview vergelijkt de oorspronkelijke en aangepaste kalender en toont tien afspraken per pagina, gesorteerd op lokale begindatum en -tijd. Open **Details** om de velden te vergelijken.
+4. Gebruik **Copy link** om de abonnementslink aan je agenda-app toe te voegen. Met **View source ICS** en **View output ICS** kun je de ruwe bestanden bekijken.
+
+**Show only changed events** en **Show only included events** filteren de preview. De abonnementsfeed wordt bepaald door de gekozen kalenderbewerkingen.
+
+## API
+
+Alle instellingen zitten in de GET-parameters. URL-encodeer de volledige bron-URL als één waarde, ook als die zelf een querystring bevat.
 
 ```text
 GET /calendar.ics?url=https%3A%2F%2Fexample.org%2Fcalendar.ics&forcetimezone=Europe%2FAmsterdam
 ```
 
-Gebruik een publiek bereikbare HTTPS- of webcal-URL. Met de optionele parameter `forcetimezone` stel je een IANA-tijdzone in. CalTune gebruikt `PRODID:-//enox.nl//CalTune//EN` in de uitvoer en bewaart de bronwaarde, indien aanwezig, in `X-CALTUNE-ORIG-PRODID`. **View source ICS** geeft het bronbestand ongewijzigd weer. Encodeer de volledige bron-URL als één parameter, ook als die zelf een querystring heeft. De datum en kloktijd komen rechtstreeks uit het bronbestand. CalTune koppelt die kloktijd aan `forcetimezone`, ook als de bron een TZID of UTC-markering heeft. Het kalenderveld `X-WR-TIMEZONE` krijgt dezelfde doelzone. De uitvoer is iCalendar (.ics). Bestaande aanvragen aan `/convert` geven ook .ics terug.
+| Parameter | Werking |
+| --- | --- |
+| `url` | Openbare bronfeed. Verplicht. |
+| `calendar-name` | Stelt de kalendernaam in. |
+| `include-title`, `exclude-title` | Herhaalbare filters op letterlijke tekst in de oorspronkelijke titel, hoofdletterongevoelig. Als er inclusieregels zijn, moet er minstens één matchen. Elke matchende uitsluitregel verwijdert de afspraak. Herhaalreeksen worden beoordeeld op de titel van de reeks. |
+| `days-back`, `days-ahead` | Relatief datumbereik op basis van de lokale begindatum. Grenzen zijn inclusief. `0` betekent vandaag en een weggelaten zijde is onbegrensd. |
+| `keep-series=1` | Houdt herhaalreeksen en hun uitzonderingen buiten de titel- en datumfilters. Andere kalenderbewerkingen blijven op die afspraken van toepassing. |
+| `title-find`, `title-replace`, `title-prefix`, `title-suffix` | Bewerkt afspraaktitels. |
+| `description-find`, `description-replace`, `description-prefix`, `description-suffix` | Bewerkt afspraakbeschrijvingen. |
+| `hide-description=1`, `hide-location=1`, `hide-attendees=1`, `hide-status=1`, `hide-event-url=1` | Laat de geselecteerde afspraakdetails weg. Bij deelnemers worden ook organisatoren weggelaten. Verbergen krijgt voorrang op bewerken of overschrijven. |
+| `force-status` | Stelt de status in op `TENTATIVE`, `CONFIRMED` of `CANCELLED`. |
+| `availability` | Stelt de beschikbaarheid in op `OPAQUE` (Busy) of `TRANSPARENT` (Free). |
+| `event-url` | Stelt dezelfde HTTP- of HTTPS-link in voor elke afspraak. |
+| `published-ttl` | Stelt `X-PUBLISHED-TTL` in met een positieve iCalendar-duur, zoals `PT30M`. De agenda-app bepaalt wanneer ze de feed opnieuw ophaalt. |
+| `forcetimezone` | Stelt een IANA-tijdzone in met behoud van de lokale kloktijd. Heledagafspraken houden hun datum. De uitvoer krijgt dezelfde doelzone in `X-WR-TIMEZONE`. |
+| `view=source`, `view=raw` | Geeft respectievelijk het ongewijzigde bronbestand en de aangepaste ICS als platte tekst terug. Zonder `view` geeft CalTune `text/calendar` terug. |
 
-Heledagafspraken houden hun kalenderdatum. Begin- en eindtijden en expliciete herhaaldatums krijgen de doelzone. Bestaande links met `to` werken als `forcetimezone` ontbreekt. Een bestaande `from`-parameter wordt genegeerd. Een eventuele UTC-eindgrens (`UNTIL`) in een herhaalregel blijft behouden.
+Gebruik voor titels of beschrijvingen maximaal twaalf paren van zoek- en vervangtekst. CalTune koppelt herhaalde parameters op volgorde en voert de regels hoofdlettergevoelig uit. Een lege vervangtekst verwijdert de gevonden tekst. Voor- en achtervoegsels worden daarna toegevoegd.
 
+Bij een datumbereik worden afzonderlijke herhalingen beoordeeld. Met een eindgrens legt CalTune de overgebleven herhalingen vast als `RDATE`. Zonder eindgrens blijft de herhaalregel actief en worden eerdere datums uitgesloten. Uitzonderingen met `RANGE=THISANDFUTURE` kunnen via **Keep recurring series unchanged** worden behouden.
 
-Optionele titelbewerkingen gebruiken maximaal twaalf paren van `title-find` en `title-replace`. De regels worden in volgorde uitgevoerd en zoeken hoofdlettergevoelig naar letterlijke tekst. Een lege vervangtekst verwijdert de gevonden tekst. Daarna worden `title-prefix` en `title-suffix` toegevoegd. De oude parameter `title-remove` blijft werken als laatste vervangregel met een lege vervangtekst. Titelbewerkingen zijn te combineren met `forcetimezone`.
-
-Gebruik een of meer `include-title`- of `exclude-title`-parameters om afspraken te filteren op letterlijke tekst in de oorspronkelijke titel, ongeacht hoofdletters. Minstens één inclusieregel moet matchen als inclusieregels zijn opgegeven. Elke matchende uitsluitregel verwijdert de afspraak. Herhaalreeksen worden gefilterd op de titel van de reeks. Gebruik `hide-description=1`, `hide-location=1` of `hide-attendees=1` om afspraakdetails weg te laten. `calendar-name` stelt de naam in die agenda-apps uit de feed kunnen overnemen.
-
-Gebruik `force-status` met `TENTATIVE`, `CONFIRMED` of `CANCELLED` om alle afspraakstatussen in te stellen. `hide-status=1` verwijdert de status en heeft voorrang.
-
-Gebruik `event-url` om bij elke afspraak dezelfde HTTP(S)-link in te stellen. `hide-event-url=1` verwijdert links uit afspraken en heeft voorrang.
-
-Beschrijvingstekst bewerk je met `description-find` en `description-replace`, `description-prefix` en `description-suffix`. De regels werken hetzelfde als bij titels. `hide-description=1` heeft voorrang.
-
-Gebruik `published-ttl` met een positieve iCalendar-duur, zoals `PT30M`, om `X-PUBLISHED-TTL` van de kalender te wijzigen. Agenda-apps bepalen zelf wanneer ze de feed opnieuw ophalen.
-
-Onder **Filter events** bepaal je ook het datumbereik. Gebruik `days-back` en/of `days-ahead` voor een relatief datumbereik op basis van de lokale begindatum. De grenzen zijn inclusief en `0` betekent vandaag. Bij herhaalreeksen worden afzonderlijke begindatums bekeken. Met een eindgrens worden de overgebleven herhalingen als RDATE-datums vastgelegd. Zonder eindgrens blijft de herhaalregel actief en worden eerdere datums uitgesloten. Gebruik `keep-series=1` om herhaalreeksen en hun uitzonderingen buiten titel- en datumfilters te houden. Een datumfilter ondersteunt geen uitzonderingen met `RANGE=THISANDFUTURE`. De preview toont voor oud en nieuw hoe ver de vroegste en laatste begindatum van vandaag liggen.
-
-Gebruik `availability=OPAQUE` voor Busy of `availability=TRANSPARENT` voor Free. De vinkjes voor alleen gewijzigde of behouden afspraken gelden alleen voor de preview.
-
-Herhaalregels worden verwerkt met de vendored [ical.js 2.2.1](https://github.com/kewisch/ical.js/tree/v2.2.1), onder de Mozilla Public License 2.0.
+De uitvoer vermeldt CalTune als producent in `PRODID` en bewaart een aanwezige bronwaarde in `X-CALTUNE-ORIG-PRODID`. Herhaalregels worden verwerkt met de meegeleverde [ical.js 2.2.1](https://github.com/kewisch/ical.js/tree/v2.2.1) onder de Mozilla Public License 2.0.
