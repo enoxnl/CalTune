@@ -253,10 +253,9 @@ code{overflow-wrap:anywhere}
 </style><main><h1>FixiCal</h1><p>Vervang de tijdzone van afspraken en behoud de kloktijden. Het resultaat is xCal (XML).</p>
 <form action="/convert" method="get">
 <label>Bron-URL<input name="url" required placeholder="https://…/kalender.ics"></label>
-<label>Brontijdzone<input name="from" required value="Europe/Amsterdam"></label>
 <label>Doeltijdzone<input name="to" required value="Europe/Amsterdam"></label>
 <button>Open xCal</button></form>
-<p>API: <code>GET /convert?url=…&amp;from=…&amp;to=…</code></p>
+<p>API: <code>GET /convert?url=…&amp;to=…</code></p>
 <p>Afspraken die de hele dag duren behouden hun datum.</p>
 </main></html>`;
 
@@ -276,13 +275,12 @@ export default {
     if (path.pathname === "/" && !path.search) return reply(help, 200, "text/html; charset=utf-8");
     if (!["/", "/convert"].includes(path.pathname)) return reply("Route niet gevonden.", 404, plain);
     try {
-      const parameters = ["url", "from", "to"].map(name => {
+      const parameters = ["url", "to"].map(name => {
         const values = path.searchParams.getAll(name);
         if (values.length !== 1 || !values[0]) throw new RequestError(400, `Geef parameter "${name}" één keer op.`);
         return values[0];
       });
-      const [sourceUrl, from, to] = parameters;
-      timeZone(from);
+      const [sourceUrl, to] = parameters;
       const target = timeZone(to);
       const url = validateSource(sourceUrl, path.hostname);
       const input = await download(url, path.hostname);
