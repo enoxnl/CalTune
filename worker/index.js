@@ -641,7 +641,7 @@ function eventCard(properties, label, target) {
 <h4>${label}</h4>
 <strong>${title}</strong>
 <div class="times">${start ? `<span>Start ${previewTime(start.value)}</span>` : ""}${endLabel}</div>
-<details><summary>Details</summary>${terms ? `<dl>${terms}</dl>` : "<p>No additional details.</p>"}</details>
+<details><summary>Details</summary><div class="event-detail-panel">${terms ? `<dl>${terms}</dl>` : "<p>No additional details.</p>"}</div></details>
 </div>`;
 }
 
@@ -745,7 +745,10 @@ section h2{margin-top:0}
 .event-comparison{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.65rem;padding:.65rem 0;border-top:1px solid #cbd7e0}
 .event-card{min-width:0;border:1px solid #cbd7e0;border-radius:.5rem;padding:.75rem;overflow-wrap:anywhere}
 .event-card h4{margin:0 0 .3rem;font-size:.875rem}.event-card details{margin-top:.45rem}
-.event-card summary{cursor:pointer;color:#145361}.event-card dl{margin:.45rem 0 0}
+.event-card summary{cursor:pointer;color:#145361}
+.event-detail-panel{margin-top:.45rem;padding:.55rem .65rem;border:1px solid #cbd7e0;border-radius:.4rem;background:#f5f8fa;font-size:.875rem}
+.event-detail-panel dl,.event-detail-panel p{margin:0}
+.event-detail-panel dt:first-child{margin-top:0}
 .event-card dt{font-weight:600;margin-top:.4rem}.event-card dd{margin:0;white-space:pre-wrap}
 .event-card p{margin:.4rem 0 0}.event-card.filtered{background:#eef3f7}
 @media(max-width:36rem){.event-comparison{grid-template-columns:1fr}}
@@ -773,6 +776,13 @@ ${BUILD_COMMIT ? `<span>Git commit <code title="${BUILD_COMMIT}">${BUILD_COMMIT.
 }
 
 const appScript = `
+for (const row of document.querySelectorAll(".event-comparison")) {
+  const [original, updated] = row.querySelectorAll("details");
+  if (!original || !updated) continue;
+  original.addEventListener("toggle", () => { updated.open = original.open; });
+  updated.addEventListener("toggle", () => { original.open = updated.open; });
+}
+
 const pageSelect = document.getElementById("preview-page");
 pageSelect?.addEventListener("change", () => pageSelect.form.requestSubmit());
 
