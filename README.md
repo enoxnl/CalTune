@@ -20,3 +20,5 @@ Gebruik `include-title` of `exclude-title` om afspraken te filteren op letterlij
 Gebruik `force-status` met `TENTATIVE`, `CONFIRMED` of `CANCELLED` om alle afspraakstatussen in te stellen. `hide-status=1` verwijdert de status en heeft voorrang.
 
 Gebruik `event-url` om bij elke afspraak dezelfde HTTP(S)-link in te stellen. `hide-event-url=1` verwijdert links uit afspraken en heeft voorrang.
+
+Beschrijvingstekst bewerk je met `description-find` en `description-replace`, `description-prefix` en `description-suffix`. De regels werken hetzelfde als bij titels. `hide-description=1` heeft voorrang.

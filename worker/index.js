@@ -391,40 +391,44 @@ async function download(url, originHost) {
 
 const attribute = value => escapeHtml(value).replace(/"/g, "&quot;");
 
-const MAX_TITLE_RULES = 12;
+const MAX_TEXT_RULES = 12;
 
-function titleEdits(query) {
+function readTextEdits(query, key) {
   const edits = new URLSearchParams();
-  for (const name of ["title-prefix", "title-suffix", "title-remove", "title-find", "title-replace"]) {
+  const findKey = `${key}-find`;
+  const replaceKey = `${key}-replace`;
+  const singleFields = [`${key}-prefix`, `${key}-suffix`];
+  if (key === "title") singleFields.push("title-remove");
+  for (const name of [...singleFields, findKey, replaceKey]) {
     const values = query.getAll(name);
-    const limit = ["title-find", "title-replace"].includes(name) ? MAX_TITLE_RULES : 1;
+    const limit = [findKey, replaceKey].includes(name) ? MAX_TEXT_RULES : 1;
     if (values.length > limit || values.some(value => value.length > 160 || /[\r\n]/.test(value))) {
       throw new RequestError(400, "Use up to 12 replacement rules and one line of up to 160 characters per field.");
     }
   }
-  for (const name of ["title-prefix", "title-suffix"]) {
+  for (const name of [`${key}-prefix`, `${key}-suffix`]) {
     const value = query.get(name)?.trim();
     if (value) edits.set(name, value);
   }
-  const finds = query.getAll("title-find");
-  const replacements = query.getAll("title-replace");
+  const finds = query.getAll(findKey);
+  const replacements = query.getAll(replaceKey);
   for (let index = 0; index < Math.max(finds.length, replacements.length); index++) {
     const find = finds[index];
     const replacement = replacements[index] || "";
     if (find?.trim()) {
-      edits.append("title-find", find);
-      edits.append("title-replace", replacement);
+      edits.append(findKey, find);
+      edits.append(replaceKey, replacement);
     } else if (replacement.trim()) {
       throw new RequestError(400, "Enter Find text for each replacement rule.");
     }
   }
-  const legacyRemove = query.get("title-remove");
+  const legacyRemove = key === "title" ? query.get("title-remove") : "";
   if (legacyRemove?.trim()) {
-    if (edits.getAll("title-find").length >= MAX_TITLE_RULES) {
+    if (edits.getAll(findKey).length >= MAX_TEXT_RULES) {
       throw new RequestError(400, "Use up to 12 replacement rules.");
     }
-    edits.append("title-find", legacyRemove);
-    edits.append("title-replace", "");
+    edits.append(findKey, legacyRemove);
+    edits.append(replaceKey, "");
   }
   return edits;
 }
@@ -434,33 +438,42 @@ function escapeCalendarText(value) {
     .replaceAll(",", "\\,").replaceAll(";", "\\;");
 }
 
-function editEventTitles(calendars, edits) {
-  const replacements = edits.getAll("title-replace");
-  const rules = edits.getAll("title-find").map((find, index) => [find, replacements[index]]);
-  const prefix = edits.get("title-prefix")?.trim();
-  const suffix = edits.get("title-suffix")?.trim();
+function editEventText(calendars, edits, key, propertyName) {
+  const replacements = edits.getAll(`${key}-replace`);
+  const rules = edits.getAll(`${key}-find`).map((find, index) => [find, replacements[index]]);
+  const prefix = edits.get(`${key}-prefix`)?.trim();
+  const suffix = edits.get(`${key}-suffix`)?.trim();
   let growth = 0;
 
   for (const calendar of calendars) {
     for (const event of calendar.children) {
       if (event.name !== "vevent") continue;
-      const summary = event.properties.find(property => property.name === "summary");
-      const original = unescapeText(summary?.value || "");
-      let title = original;
+      const field = event.properties.find(property => property.name === propertyName);
+      const original = unescapeText(field?.value || "");
+      let text = original;
       for (const [find, replacement] of rules) {
-        if (title.length > 8192 && replacement.length > find.length && title.includes(find)) {
-          throw new RequestError(422, "This replacement would make an event title too large.");
+        if (text.length > 8192 && replacement.length > find.length && text.includes(find)) {
+          throw new RequestError(422, `This replacement would make an event ${key} too large.`);
         }
-        title = title.replaceAll(find, () => replacement);
+        text = text.replaceAll(find, () => replacement);
       }
-      if (title !== original) title = title.trim();
-      if (prefix || suffix) title = [prefix, title, suffix].filter(Boolean).join(" ");
-      if (title === original) continue;
-      growth += Math.max(0, title.length - original.length);
+      if (text !== original) text = text.trim();
+      if (prefix || suffix) text = [prefix, text, suffix].filter(Boolean).join(" ");
+      if (text === original) continue;
+      growth += Math.max(0, text.length - original.length);
       if (growth > MAX_BYTES) throw new RequestError(422, "These edits would make the calendar too large.");
-      const value = escapeCalendarText(title);
-      if (summary) summary.value = value;
-      else event.properties.push({ name: "summary", parameters: new Map(), value });
+      const value = escapeCalendarText(text);
+      if (field) field.value = value;
+      else event.properties.push({ name: propertyName, parameters: new Map(), value });
+      if (propertyName === "description") {
+        // Alternate descriptions still describe the original text.
+        if (field?.parameters.has("altrep")) {
+          field.parameters = new Map(field.parameters);
+          field.parameters.delete("altrep");
+        }
+        event.properties = event.properties.filter(property =>
+          !["x-alt-desc", "styled-description"].includes(property.name));
+      }
     }
   }
 }
@@ -469,36 +482,36 @@ function optionTextInput(name, label, value = "", type = "text", maxLength = 160
   return `<label>${label}<input type="${type}" name="${name}" maxlength="${maxLength}" value="${attribute(value)}"></label>`;
 }
 
-function titleRuleRow(find = "", replacement = "") {
+function textRuleRow(key, find = "", replacement = "") {
   return `<div class="edit-row replacement-rule">
-${optionTextInput("title-find", "Find text", find)}
-${optionTextInput("title-replace", "Replace with", replacement)}
+${optionTextInput(`${key}-find`, "Find text", find)}
+${optionTextInput(`${key}-replace`, "Replace with", replacement)}
 <button class="secondary" type="button" data-remove-rule aria-label="Remove replacement rule">Remove</button>
 </div>`;
 }
 
-function titleFieldsHtml(values, enabled) {
-  const finds = values.getAll("title-find");
-  const replacements = values.getAll("title-replace");
-  const legacyRemove = values.get("title-remove");
-  if (legacyRemove && finds.length < MAX_TITLE_RULES) {
+function textFieldsHtml(key, values, enabled) {
+  const finds = values.getAll(`${key}-find`);
+  const replacements = values.getAll(`${key}-replace`);
+  const legacyRemove = key === "title" ? values.get("title-remove") : "";
+  if (legacyRemove && finds.length < MAX_TEXT_RULES) {
     replacements[finds.length] = "";
     finds.push(legacyRemove);
   }
-  const rows = Array.from({ length: Math.min(MAX_TITLE_RULES, Math.max(1, finds.length, replacements.length)) },
-    (_, index) => titleRuleRow(finds[index], replacements[index]));
-  return `<div class="option-panel title-edits">
-<input type="hidden" name="title-form" value="1">
-<label class="force-option"><input id="edit-titles" type="checkbox" name="edit-titles" value="1"${enabled ? " checked" : ""}>Edit event titles</label>
-<div class="title-options">
+  const rows = Array.from({ length: Math.min(MAX_TEXT_RULES, Math.max(1, finds.length, replacements.length)) },
+    (_, index) => textRuleRow(key, finds[index], replacements[index]));
+  return `<div class="option-panel text-edits">
+<input type="hidden" name="${key}-form" value="1">
+<label class="force-option"><input class="text-edit-toggle" type="checkbox" name="edit-${key}s" value="1"${enabled ? " checked" : ""}>Edit event ${key}s</label>
+<div class="text-options">
 <div class="edit-row">
-${optionTextInput("title-prefix", "Add before the title", values.get("title-prefix") || "")}
-${optionTextInput("title-suffix", "Add after the title", values.get("title-suffix") || "")}
+${optionTextInput(`${key}-prefix`, `Add before the ${key}`, values.get(`${key}-prefix`) || "")}
+${optionTextInput(`${key}-suffix`, `Add after the ${key}`, values.get(`${key}-suffix`) || "")}
 </div>
 <p>Replacement rules run from top to bottom and match exact text. Leave “Replace with” blank to delete the matching text.</p>
-<div id="replacement-rules">${rows.join("")}</div>
-<template id="replacement-template">${titleRuleRow()}</template>
-<button class="secondary" id="add-replacement-rule" type="button">Add replacement rule</button>
+<div data-replacement-rules>${rows.join("")}</div>
+<template data-replacement-template>${textRuleRow(key)}</template>
+<button class="secondary" data-add-replacement-rule type="button">Add replacement rule</button>
 </div></div>`;
 }
 
@@ -712,6 +725,7 @@ ${rows ? `<ul class="events">${rows}</ul>` : "<p>The source feed contains no eve
 function previewPagination(query, currentPage, pageCount) {
   const previewFields = ["url", "force", "timezone", "forcetimezone", "to", "title-form", "edit-titles",
     "title-prefix", "title-suffix", "title-find", "title-replace", "title-remove", "extras-form",
+    "description-form", "edit-descriptions", "description-prefix", "description-suffix", "description-find", "description-replace",
     ...extraOptions.flatMap(option => [option.toggle, ...option.fields.map(([name]) => name)])];
   const fields = [...query].filter(([name]) => previewFields.includes(name)).map(([name, value]) =>
     `<input type="hidden" name="${attribute(name)}" value="${attribute(value)}">`).join("");
@@ -734,7 +748,7 @@ function timeZoneOptions(selected) {
     `<option value="${attribute(zone)}"${zone === active ? " selected" : ""}>${escapeHtml(zone)}</option>`).join("");
 }
 
-function page({ sourceUrl = "", target = "", force = false, edits = new URLSearchParams(), editTitles = false, extraQuery = new URLSearchParams(), extraForm = false, result = "" } = {}) {
+function page({ sourceUrl = "", target = "", force = false, edits = new URLSearchParams(), editTitles = false, descriptionEdits = new URLSearchParams(), editDescriptions = false, extraQuery = new URLSearchParams(), extraForm = false, result = "" } = {}) {
   const extraPanels = extraFieldsHtml(extraQuery, extraForm);
   return `<!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -755,9 +769,9 @@ select{appearance:none;padding-right:2.5rem;background:linear-gradient(45deg,tra
 .extra-fields{display:none;margin-top:.75rem}
 .extra-option:has(.extra-toggle:checked) .extra-fields{display:grid;gap:.65rem}
 .extra-fields p{margin:0}
-.title-options{display:none;margin-top:.75rem}
-.title-edits:has(#edit-titles:checked) .title-options{display:block}
-.title-edits p{margin:.65rem 0}
+.text-options{display:none;margin-top:.75rem}
+.text-edits:has(.text-edit-toggle:checked) .text-options{display:block}
+.text-edits p{margin:.65rem 0}
 .edit-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,12rem),1fr));gap:.75rem}
 .replacement-rule{grid-template-columns:repeat(2,minmax(0,1fr)) auto;align-items:end;margin-bottom:.75rem}
 .secondary{background:white;color:#145361;border:1px solid #758a9a}
@@ -786,13 +800,14 @@ section h2{margin-top:0}
 footer{display:flex;flex-wrap:wrap;gap:.4rem 1rem;margin-top:1.5rem;padding:.8rem 0;border-top:1px solid #cbd7e0;font-size:.875rem}
 footer a{color:#145361}
 p[role=alert]{padding:1rem;background:#fff4f1;color:#61231d;border-radius:.45rem}
-</style><main><h1>CalTune</h1><p>Customize an existing calendar feed and get a new .ics subscription link. Rename the calendar, filter events, edit titles, hide details, or override the time zone. Preview your changes before subscribing.</p>
+</style><main><h1>CalTune</h1><p>Customize an existing calendar feed and get a new .ics subscription link. Rename the calendar, filter events, edit titles and descriptions, hide details, or override the time zone. Preview your changes before subscribing.</p>
 <form action="/preview" method="get">
 <label>Source URL<input name="url" required value="${attribute(sourceUrl)}" placeholder="https://…/calendar.ics"></label>
 <input type="hidden" name="extras-form" value="1">
 ${extraPanels["rename-calendar"]}
 ${extraPanels["filter-events"]}
-${titleFieldsHtml(edits, editTitles)}
+${textFieldsHtml("title", edits, editTitles)}
+${textFieldsHtml("description", descriptionEdits, editDescriptions)}
 ${extraPanels["hide-details"]}
 ${extraPanels["force-event-status"]}
 ${extraPanels["force-event-url"]}
@@ -818,31 +833,32 @@ for (const row of document.querySelectorAll(".event-comparison")) {
 const pageSelect = document.getElementById("preview-page");
 pageSelect?.addEventListener("change", () => pageSelect.form.requestSubmit());
 
-const rules = document.getElementById("replacement-rules");
-const template = document.getElementById("replacement-template");
-const addRule = document.getElementById("add-replacement-rule");
-function updateRuleButtons() {
-  const count = rules.children.length;
-  addRule.disabled = count >= ${MAX_TITLE_RULES};
-  for (const button of rules.querySelectorAll("[data-remove-rule]")) button.disabled = count === 1;
+for (const editor of document.querySelectorAll(".text-edits")) {
+  const rules = editor.querySelector("[data-replacement-rules]");
+  const template = editor.querySelector("[data-replacement-template]");
+  const addRule = editor.querySelector("[data-add-replacement-rule]");
+  function updateRuleButtons() {
+    const count = rules.children.length;
+    addRule.disabled = count >= ${MAX_TEXT_RULES};
+    for (const button of rules.querySelectorAll("[data-remove-rule]")) button.disabled = count === 1;
+  }
+  addRule.addEventListener("click", () => {
+    if (rules.children.length >= ${MAX_TEXT_RULES}) return;
+    rules.append(template.content.cloneNode(true));
+    updateRuleButtons();
+    rules.lastElementChild.querySelector("input").focus();
+  });
+  rules.addEventListener("click", event => {
+    const button = event.target.closest("[data-remove-rule]");
+    if (!button || rules.children.length === 1) return;
+    const row = button.closest(".replacement-rule");
+    const next = row.nextElementSibling || row.previousElementSibling;
+    row.remove();
+    updateRuleButtons();
+    next.querySelector("input").focus();
+  });
+  updateRuleButtons();
 }
-addRule.addEventListener("click", () => {
-  if (rules.children.length >= ${MAX_TITLE_RULES}) return;
-  rules.append(template.content.cloneNode(true));
-  updateRuleButtons();
-  rules.lastElementChild.querySelector("input").focus();
-});
-rules.addEventListener("click", event => {
-  const button = event.target.closest("[data-remove-rule]");
-  if (!button || rules.children.length === 1) return;
-  const row = button.closest(".replacement-rule");
-  const next = row.nextElementSibling || row.previousElementSibling;
-  row.remove();
-  updateRuleButtons();
-  next.querySelector("input").focus();
-});
-updateRuleButtons();
-
 
 const field = document.getElementById("calendar-url");
 const button = document.getElementById("copy-calendar-url");
@@ -882,6 +898,9 @@ export default {
     const editTitles = query.has("title-form") && preview
       ? query.has("edit-titles")
       : [...query].some(([key, value]) => key.startsWith("title-") && value.trim());
+    const editDescriptions = preview && query.has("description-form")
+      ? query.has("edit-descriptions")
+      : [...query].some(([key, value]) => key.startsWith("description-") && value.trim());
     const extraForm = preview && query.has("extras-form");
     const form = {
       sourceUrl: query.get("url") || "",
@@ -889,6 +908,8 @@ export default {
       force,
       edits: editTitles ? query : new URLSearchParams(),
       editTitles,
+      descriptionEdits: editDescriptions ? query : new URLSearchParams(),
+      editDescriptions,
       extraQuery: query,
       extraForm
     };
@@ -907,25 +928,30 @@ export default {
       if (force && (zones.length !== 1 || !zones[0])) throw new RequestError(400, "Select a target time zone.");
       const target = force ? timeZone(zones[0]) : "";
       const extras = readExtras(query, extraForm);
-      const edits = editTitles ? titleEdits(query) : new URLSearchParams();
+      const edits = editTitles ? readTextEdits(query, "title") : new URLSearchParams();
+      const descriptionEdits = editDescriptions ? readTextEdits(query, "description") : new URLSearchParams();
       const url = validateSource(sourceUrl, path.hostname);
       const input = await download(url, path.hostname);
       const calendarType = "text/calendar; charset=utf-8";
-      if (!preview && !target && !edits.size && !extras.size) return reply(input, 200, calendarType);
+      if (!preview && !target && !edits.size && !descriptionEdits.size && !extras.size) return reply(input, 200, calendarType);
       const calendars = parseCalendar(new TextDecoder().decode(input));
       const originals = preview ? new Map(calendarEvents(calendars).map(event =>
         [event, event.properties.map(property => ({ ...property }))])) : null;
       if (extras.size) applyExtras(calendars, extras);
-      if (edits.size) editEventTitles(calendars, edits);
+      if (edits.size) editEventText(calendars, edits, "title", "summary");
+      if (descriptionEdits.size && !extras.has("hide-description")) {
+        editEventText(calendars, descriptionEdits, "description", "description");
+      }
       if (preview) {
         const calendarUrl = new URL("/calendar.ics", path);
         calendarUrl.searchParams.set("url", sourceUrl);
         if (target) calendarUrl.searchParams.set("forcetimezone", target);
         for (const [name, value] of edits) calendarUrl.searchParams.append(name, value);
+        for (const [name, value] of descriptionEdits) calendarUrl.searchParams.append(name, value);
         for (const [name, value] of extras) calendarUrl.searchParams.set(name, value);
         const updated = new Set(calendarEvents(calendars));
         const result = previewResults(originals, updated, target, calendarUrl.href, query, extras.get("calendar-name"));
-        return reply(page({ ...form, sourceUrl, target, edits, result }), 200, html);
+        return reply(page({ ...form, sourceUrl, target, edits, descriptionEdits, result }), 200, html);
       }
       return reply(toIcs(calendars, target), 200, calendarType);
     } catch (error) {
