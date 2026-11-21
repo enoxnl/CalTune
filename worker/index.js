@@ -411,7 +411,13 @@ function previewResults(calendars, target, calendarUrl) {
   }).join("");
   return `<section aria-labelledby="result">
 <h2 id="result">Kalender</h2>
-<label>Abonnements-URL voor Google Agenda (.ics)<input readonly spellcheck="false" value="${attribute(calendarUrl)}"></label>
+<label for="calendar-url">Abonnements-URL voor Google Agenda (.ics)</label>
+<div class="calendar-link">
+<input id="calendar-url" readonly spellcheck="false" value="${attribute(calendarUrl)}">
+<button id="copy-calendar-url" type="button">Kopieer link</button>
+</div>
+<p id="copy-status" role="status"></p>
+<script src="/copy-link.js" defer></script>
 <p><a href="${attribute(calendarUrl)}">Open .ics</a></p>
 <h3>Eerste afspraken</h3>
 <p>${target ? `Tijdzone ${escapeHtml(target)}.` : "Tijden en tijdzones uit de bronfeed."} Maximaal 10 afspraken in de volgorde van de bronfeed.</p>
@@ -444,7 +450,11 @@ select{appearance:none;padding-right:2.5rem;background:linear-gradient(45deg,tra
 button{border:0;background:#145361;color:white;font-weight:700;cursor:pointer}
 a{color:#145361;text-decoration-thickness:.1em;text-underline-offset:.15em}
 section{margin-top:1.5rem;padding:1.5rem;background:white;border:1px solid #cbd7e0;border-radius:1rem}
-section h2{margin-top:0}.events{margin:0;padding:0;list-style:none}
+section h2{margin-top:0}
+.calendar-link{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.3rem}
+.calendar-link input{flex:1 1 12rem;min-width:0;width:auto}
+#copy-status{margin:.4rem 0 0}#copy-status:empty{margin:0}
+.events{margin:0;padding:0;list-style:none}
 .events li{padding:.8rem 0;border-top:1px solid #cbd7e0;overflow-wrap:anywhere}
 .times{display:flex;flex-wrap:wrap;gap:.25rem 1rem}
 p[role=alert]{padding:1rem;background:#fff4f1;color:#61231d;border-radius:.45rem}
@@ -459,10 +469,28 @@ p[role=alert]{padding:1rem;background:#fff4f1;color:#61231d;border-radius:.45rem
 ${result}</main></html>`;
 }
 
+const copyLinkScript = `
+const field = document.getElementById("calendar-url");
+const button = document.getElementById("copy-calendar-url");
+const status = document.getElementById("copy-status");
+
+button.addEventListener("click", async () => {
+  status.textContent = "";
+  try {
+    await navigator.clipboard.writeText(field.value);
+    status.textContent = "Link gekopieerd.";
+  } catch {
+    field.focus();
+    field.select();
+    status.textContent = "De link is geselecteerd. Kopieer hem met Ctrl+C of ⌘C.";
+  }
+});
+`;
+
 function reply(body, status, type, extra = {}) {
   return new Response(body, { status, headers: {
     "Content-Type": type, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
-    "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'",
+    "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; form-action 'self'",
     ...extra
   } });
 }
@@ -486,6 +514,7 @@ export default {
       ? reply(page({ ...form, result: `<p role="alert">${escapeHtml(message)}</p>` }), status, html)
       : reply(message, status, plain);
     if (request.method !== "GET") return reply("Gebruik GET.", 405, plain, { Allow: "GET" });
+    if (path.pathname === "/copy-link.js") return reply(copyLinkScript, 200, "text/javascript; charset=utf-8");
     if (path.pathname === "/" && !path.search) return reply(page(), 200, html);
     if (!["/", "/convert", "/preview", "/calendar.ics"].includes(path.pathname)) return reply("Route niet gevonden.", 404, plain);
     try {
