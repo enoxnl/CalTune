@@ -465,8 +465,8 @@ function editEventTitles(calendars, edits) {
   }
 }
 
-function optionTextInput(name, label, value = "") {
-  return `<label>${label}<input name="${name}" maxlength="160" value="${attribute(value)}"></label>`;
+function optionTextInput(name, label, value = "", type = "text", maxLength = 160) {
+  return `<label>${label}<input type="${type}" name="${name}" maxlength="${maxLength}" value="${attribute(value)}"></label>`;
 }
 
 function titleRuleRow(find = "", replacement = "") {
@@ -509,9 +509,11 @@ const extraOptions = [
     fields: [["include-title", "Title contains"], ["exclude-title", "Title excludes"]] },
   { toggle: "hide-details", label: "Hide event details",
     fields: [["hide-description", "Descriptions"], ["hide-location", "Locations"],
-      ["hide-attendees", "Attendees and organizers"], ["hide-status", "Status"]], checkboxes: true },
+      ["hide-attendees", "Attendees and organizers"], ["hide-status", "Status"], ["hide-event-url", "Event URL"]], checkboxes: true },
   { toggle: "force-event-status", label: "Force event status",
     fields: [["force-status", "Target status"]], choices: eventStatuses },
+  { toggle: "force-event-url", label: "Force event URL",
+    fields: [["event-url", "Replacement event URL"]], url: true },
   { toggle: "rename-calendar", label: "Rename calendar",
     fields: [["calendar-name", "Calendar name"]] }
 ];
@@ -528,11 +530,19 @@ function readExtras(query, useForm) {
       const values = query.getAll(name);
       if (!values.length) continue;
       const [value] = values;
-      const invalid = option.checkboxes ? value !== "1" : value.length > 160 || /[\r\n]/.test(value);
+      const invalid = option.checkboxes ? value !== "1" : value.length > (option.url ? 2048 : 160) || /[\r\n]/.test(value);
       if (values.length !== 1 || invalid || (value && option.choices && !option.choices.includes(value))) {
         throw new RequestError(400, `Invalid value for ${label}.`);
       }
       if (value.trim()) result.set(name, value.trim());
+    }
+    if (option.url) {
+      const name = option.fields[0][0];
+      const url = URL.parse(result.get(name) || "");
+      if (!url || !["http:", "https:"].includes(url.protocol) || url.username || url.password) {
+        throw new RequestError(400, "Enter an HTTP or HTTPS event URL without credentials.");
+      }
+      result.set(name, url.href);
     }
     if (option.choices && !result.has(option.fields[0][0])) {
       throw new RequestError(400, "Select a target status.");
@@ -553,6 +563,7 @@ function extraFieldsHtml(query, useForm) {
         const choices = option.choices.map(status => `<option value="${status}"${value === status ? " selected" : ""}>${status[0] + status.slice(1).toLowerCase()}</option>`).join("");
         return `<label>${label}<select name="${name}"><option value="">Select a status</option>${choices}</select></label>`;
       }
+      if (option.url) return optionTextInput(name, label, value || "", "url", 2048);
       if (!option.checkboxes) return optionTextInput(name, label, value || "");
       return `<label class="force-option"><input type="checkbox" name="${name}" value="1"${value === "1" ? " checked" : ""}>${label}</label>`;
     }).join("");
@@ -569,7 +580,9 @@ function applyExtras(calendars, extras) {
   const calendarName = extras.get("calendar-name");
   const hidden = new Set();
   if (extras.has("hide-status")) hidden.add("status");
-  const status = hidden.has("status") ? null : extras.get("force-status");
+  if (extras.has("hide-event-url")) hidden.add("url");
+  const replacements = [["status", extras.get("force-status")], ["url", extras.get("event-url")]]
+    .filter(([name, value]) => value && !hidden.has(name));
   if (extras.has("hide-description")) {
     hidden.add("description");
     hidden.add("x-alt-desc");
@@ -598,17 +611,14 @@ function applyExtras(calendars, extras) {
         return (!include || title.includes(include)) && (!exclude || !title.includes(exclude));
       });
     }
-    if (status) {
+    if (hidden.size || replacements.length) {
       for (const event of calendar.children) {
         if (event.name !== "vevent") continue;
-        event.properties = event.properties.filter(field => field.name !== "status");
-        event.properties.push({ name: "status", parameters: new Map(), value: status });
-      }
-    }
-    if (hidden.size) {
-      for (const event of calendar.children) {
-        if (event.name !== "vevent") continue;
-        event.properties = event.properties.filter(field => !hidden.has(field.name));
+        event.properties = event.properties.filter(field => !hidden.has(field.name) &&
+          !replacements.some(([name]) => name === field.name));
+        for (const [name, value] of replacements) {
+          event.properties.push({ name, parameters: new Map(), value });
+        }
         // Keep alarms valid when a field required by their action is hidden.
         event.children = event.children.filter(child =>
           child.name !== "valarm" || !child.properties.some(field => hidden.has(field.name)));
@@ -785,6 +795,7 @@ ${extraPanels["filter-events"]}
 ${titleFieldsHtml(edits, editTitles)}
 ${extraPanels["hide-details"]}
 ${extraPanels["force-event-status"]}
+${extraPanels["force-event-url"]}
 <div class="option-panel force-zone">
 <label class="force-option"><input type="checkbox" name="force" value="1"${force ? " checked" : ""}>Force timezone</label>
 <label class="zone-select">Target time zone<select name="timezone">${timeZoneOptions(target)}</select></label>

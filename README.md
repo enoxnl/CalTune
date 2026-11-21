@@ -18,3 +18,5 @@ Optionele titelbewerkingen gebruiken maximaal twaalf paren van `title-find` en `
 Gebruik `include-title` of `exclude-title` om afspraken te filteren op letterlijke tekst in de oorspronkelijke titel, ongeacht hoofdletters. Herhaalreeksen worden gefilterd op de titel van de reeks. Gebruik `hide-description=1`, `hide-location=1` of `hide-attendees=1` om afspraakdetails weg te laten. `calendar-name` stelt de naam in die agenda-apps uit de feed kunnen overnemen.
 
 Gebruik `force-status` met `TENTATIVE`, `CONFIRMED` of `CANCELLED` om alle afspraakstatussen in te stellen. `hide-status=1` verwijdert de status en heeft voorrang.
+
+Gebruik `event-url` om bij elke afspraak dezelfde HTTP(S)-link in te stellen. `hide-event-url=1` verwijdert links uit afspraken en heeft voorrang.
