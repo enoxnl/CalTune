@@ -886,12 +886,13 @@ ${rows ? `<ul class="events">${rows}</ul>` : "<p>The source feed contains no eve
 </section>`;
 }
 
-function previewPagination(query, currentPage, pageCount, eventCount) {
-  const previewFields = ["url", "force", "timezone", "forcetimezone", "to", "title-form", "edit-titles",
+const previewFields = ["url", "force", "timezone", "forcetimezone", "to", "title-form", "edit-titles",
     "title-prefix", "title-suffix", "title-find", "title-replace", "title-remove", "extras-form",
     "description-form", "edit-descriptions", "description-prefix", "description-suffix", "description-find", "description-replace",
     "published-ttl-amount", "published-ttl-unit",
     ...extraOptions.flatMap(option => [option.toggle, ...option.fields.map(([name]) => name)])];
+
+function previewPagination(query, currentPage, pageCount, eventCount) {
   const fields = [...query].filter(([name]) => previewFields.includes(name)).map(([name, value]) =>
     `<input type="hidden" name="${attribute(name)}" value="${attribute(value)}">`).join("");
   const options = Array.from({ length: pageCount }, (_, index) => {
@@ -923,6 +924,13 @@ function page({ sourceUrl = "", target = "", force = false, edits = new URLSearc
 <style>
 *{box-sizing:border-box}body{margin:0;background:#eef3f7;color:#173047;font:1rem/1.5 system-ui,sans-serif}
 main{max-width:40rem;margin:clamp(2rem,9vw,7rem) auto;padding:0 1rem}h1{font-size:2.6rem;line-height:1.1;margin:0}
+.source-field{display:grid;gap:.35rem}
+button.text-button{justify-self:end;background:none;color:#145361;font-weight:500;text-decoration:underline;padding:.2rem 0}
+.import-dialog{width:min(32rem,calc(100% - 2rem));padding:0;border:1px solid #cbd7e0;border-radius:1rem;color:inherit}
+.import-dialog::backdrop{background:#17304766}
+.import-dialog form{border:0}
+.import-dialog h2,.import-dialog p{margin:0}
+.import-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:.5rem}
 form{display:grid;gap:1rem;padding:1.5rem;background:white;border:1px solid #cbd7e0;border-radius:1rem}
 label{display:grid;gap:.3rem;font-weight:600}input,select,button{font:inherit;border-radius:.45rem;padding:.65rem .8rem}
 input,select{width:100%;border:1px solid #758a9a;color:inherit}
@@ -979,7 +987,10 @@ footer a{color:#145361}
 p[role=alert]{padding:1rem;background:#fff4f1;color:#61231d;border-radius:.45rem}
 </style><main><h1>CalTune</h1><p>Customize an existing calendar feed and get a new .ics subscription link.</p>
 <form action="/preview" method="get">
+<div class="source-field">
 <label>Source URL<input name="url" required value="${attribute(sourceUrl)}" placeholder="https://…/calendar.ics"></label>
+<button class="text-button" id="open-settings-import" type="button">Import settings from existing URL</button>
+</div>
 <input type="hidden" name="extras-form" value="1">
 ${extraPanels["rename-calendar"]}
 ${extraPanels["filter-events"]}
@@ -994,6 +1005,17 @@ ${extraPanels["set-published-ttl"]}
 ${optionSettings("Force timezone", `<label class="zone-select">Target time zone<select name="timezone">${timeZoneOptions(target)}</select></label>`)}
 </div>
 <button>Show calendar and events</button></form>
+<dialog class="import-dialog" id="settings-import" aria-labelledby="settings-import-title">
+<form id="settings-import-form" method="dialog">
+<h2 id="settings-import-title">Import settings</h2>
+<label>CalTune URL<input id="settings-import-url" type="url" required autofocus placeholder="https://caltune.enox.nl/calendar.ics?…"></label>
+<p id="settings-import-error" role="alert" hidden></p>
+<div class="import-actions">
+<button class="secondary" id="cancel-settings-import" type="button">Cancel</button>
+<button type="submit">Import settings</button>
+</div>
+</form>
+</dialog>
 ${result}
 <footer><span>© 2026 <a href="https://enox.nl">enox.nl</a></span>
 ${BUILD_COMMIT ? `<span>Git commit <code title="${BUILD_COMMIT}">${BUILD_COMMIT.slice(0, 7)}</code></span>` : ""}
@@ -1001,6 +1023,42 @@ ${BUILD_COMMIT ? `<span>Git commit <code title="${BUILD_COMMIT}">${BUILD_COMMIT.
 }
 
 const appScript = `
+const importDialog = document.getElementById("settings-import");
+const importForm = document.getElementById("settings-import-form");
+const importField = document.getElementById("settings-import-url");
+const importError = document.getElementById("settings-import-error");
+
+document.getElementById("open-settings-import").addEventListener("click", () => {
+  importError.hidden = true;
+  importDialog.showModal();
+});
+document.getElementById("cancel-settings-import").addEventListener("click", () => importDialog.close());
+importForm.addEventListener("submit", event => {
+  event.preventDefault();
+  let imported;
+  try {
+    imported = new URL(importField.value.trim());
+  } catch {
+    // The validation below keeps the dialog open for correction.
+  }
+  const origins = [location.origin, "https://caltune.enox.nl", "https://ical.enox.nl"];
+  const sources = imported?.searchParams.getAll("url");
+  if (!imported || !origins.includes(imported.origin) || imported.username || imported.password ||
+      !["/calendar.ics", "/convert", "/preview", "/"].includes(imported.pathname) ||
+      sources.length !== 1 || !sources[0]) {
+    importError.textContent = "Enter a CalTune link that contains a source calendar URL.";
+    importError.hidden = false;
+    return;
+  }
+  const keys = new Set(${JSON.stringify(previewFields)});
+  const destination = new URL("/preview", location.origin);
+  for (const [name, value] of imported.searchParams) {
+    if (keys.has(name)) destination.searchParams.append(name, value);
+  }
+  location.assign(destination.href);
+});
+
+
 for (const row of document.querySelectorAll(".event-comparison, .calendar-comparison")) {
   const [original, updated] = row.querySelectorAll("details");
   if (!original || !updated) continue;
