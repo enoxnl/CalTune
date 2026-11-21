@@ -1,17 +1,6 @@
 const MAX_BYTES = 2 * 1024 * 1024;
 const appointmentFields = new Set(["dtstart", "dtend", "due", "recurrence-id", "rdate", "exdate", "trigger"]);
-const types = {
-  dtstart: "date-time", dtend: "date-time", due: "date-time", dtstamp: "date-time",
-  created: "date-time", "last-modified": "date-time", completed: "date-time",
-  "recurrence-id": "date-time", rdate: "date-time", exdate: "date-time",
-  rrule: "recur", exrule: "recur", trigger: "duration", duration: "duration",
-  tzoffsetfrom: "utc-offset", tzoffsetto: "utc-offset", freebusy: "period",
-  organizer: "cal-address", attendee: "cal-address", attach: "uri", url: "uri",
-  tzurl: "uri", source: "uri", priority: "integer", sequence: "integer",
-  repeat: "integer", "percent-complete": "integer", geo: "float"
-};
-const parameterTypes = { altrep: "uri", dir: "uri", "delegated-from": "cal-address",
-  "delegated-to": "cal-address", member: "cal-address", "sent-by": "cal-address", rsvp: "boolean" };
+const appointmentTypes = { trigger: "duration" };
 
 class RequestError extends Error {
   constructor(status, message) {
@@ -20,14 +9,9 @@ class RequestError extends Error {
   }
 }
 
-function xml(value) {
+function escapeHtml(value) {
   return String(value).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/g, "\ufffd")
     .replace(/[&<>]/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[character]);
-}
-
-function element(name, body) {
-  if (!/^[a-z][a-z0-9-]*$/.test(name)) throw new RequestError(422, "Ongeldige iCalendar-naam.");
-  return `<${name}>${body}</${name}>`;
 }
 
 function contentLine(line) {
@@ -102,86 +86,6 @@ function extended(value) {
 
 const unescapeText = value => value.replace(/\\([nN,;\\])/g, (_, code) =>
   code.toLowerCase() === "n" ? "\n" : code);
-const splitText = value => value.match(/(?:\\.|[^,\\])*(?:,|$)/g)
-  .filter((part, index, parts) => part || index < parts.length - 1)
-  .map(part => part.replace(/,$/, ""));
-
-function recurrence(value) {
-  const order = ["freq", "until", "count", "interval", "bysecond", "byminute", "byhour", "byday",
-    "bymonthday", "byyearday", "byweekno", "bymonth", "bysetpos", "wkst"];
-  const fields = new Map(value.split(";").map(part => {
-    const [name, content] = part.split("=", 2);
-    if (!content || !order.includes(name.toLowerCase())) {
-      throw new RequestError(422, "Onbekende iCalendar-herhaalregel.");
-    }
-    return [name.toLowerCase(), content];
-  }));
-  return order.filter(name => fields.has(name)).map(name => fields.get(name).split(",")
-    .map(part => element(name, xml(name === "until" ? extended(part) : part))).join("")).join("");
-}
-
-function propertyXml(property, target) {
-  const { name, value } = property;
-  const parameters = new Map(property.parameters);
-  const type = parameters.get("value")?.[0].toLowerCase() || Object.hasOwn(types, name) && types[name]
-    || (name.startsWith("x-") ? "unknown" : "text");
-  parameters.delete("value");
-  let formatTime = extended;
-  if (target && appointmentFields.has(name) && (type === "date-time" || type === "period")) {
-    const utc = target === "UTC";
-    formatTime = dateTime => extended(dateTime).replace(/Z$/, "") + (utc ? "Z" : "");
-    if (utc) parameters.delete("tzid");
-    else parameters.set("tzid", [target]);
-  }
-  const paramXml = [...parameters].map(([key, values]) => element(key,
-    values.map(item => element(Object.hasOwn(parameterTypes, key) ? parameterTypes[key] :
-      key.startsWith("x-") ? "unknown" : "text", xml(key === "rsvp" ? item.toLowerCase() : item))).join(""))).join("");
-  let body;
-  if (name === "geo") {
-    const [latitude, longitude] = value.split(";");
-    body = element("latitude", xml(latitude)) + element("longitude", xml(longitude));
-  } else if (name === "request-status") {
-    const [code, description, data] = value.split(/(?<!\\);/);
-    body = element("code", xml(code)) + element("description", xml(unescapeText(description || "")));
-    if (data !== undefined) body += element("data", xml(unescapeText(data)));
-  } else {
-    const values = ["rdate", "exdate", "freebusy"].includes(name) ? value.split(",")
-      : ["categories", "resources"].includes(name) ? splitText(value) : [value];
-    body = values.map(item => {
-      if (type === "recur") return element(type, recurrence(item));
-      if (type === "period") {
-        const [start, finish] = item.split("/");
-        if (!finish) throw new RequestError(422, "Ongeldige iCalendar-periode.");
-        const end = finish.startsWith("P") ? element("duration", xml(finish)) : element("end", xml(formatTime(finish)));
-        return element(type, element("start", xml(formatTime(start))) + end);
-      }
-      if (type === "date-time") item = formatTime(item);
-      if (type === "date") item = extended(item);
-      if (type === "text") item = unescapeText(item);
-      if (type === "boolean") item = item.toLowerCase();
-      if (type === "utc-offset") item = item.replace(/^([+-]\d{2})(\d{2})(\d{2})?$/, (_, h, m, s) =>
-        `${h}:${m}${s ? ":" + s : ""}`);
-      return element(type, xml(item));
-    }).join("");
-  }
-  return element(name, (paramXml ? element("parameters", paramXml) : "") + body);
-}
-
-function componentXml(component, target) {
-  // Time-zone definitions describe transitions and keep their original timestamps.
-  if (component.name === "vtimezone") target = null;
-  const properties = component.properties.map(property => propertyXml(property, target)).join("");
-  const children = component.children.map(child => componentXml(child, target)).join("");
-  return element(component.name, (properties ? element("properties", properties) : "") +
-    (children ? element("components", children) : ""));
-}
-
-function toXcal(calendars, target) {
-  const contents = calendars.map(calendar => componentXml(calendar, target)).join("");
-  return '<?xml version="1.0" encoding="UTF-8"?>\n<icalendar xmlns="urn:ietf:params:xml:ns:icalendar-2.0">' +
-    contents + "</icalendar>\n";
-}
-
 function iCalendarTimeZone(target) {
   return new Intl.DateTimeFormat("en-GB", {
     timeZone: target, calendar: "iso8601", numberingSystem: "latn", hourCycle: "h23",
@@ -245,7 +149,7 @@ function toIcs(calendars, target) {
       lines.push(`BEGIN:${name}`);
       for (const property of component.properties) {
         const parameters = new Map(property.parameters);
-        const type = parameters.get("value")?.[0].toLowerCase() || types[property.name];
+        const type = parameters.get("value")?.[0].toLowerCase() || appointmentTypes[property.name] || "date-time";
         let value = property.value;
         if (rewrite && appointmentFields.has(property.name) && (type === "date-time" || type === "period")) {
           parameters.delete("tzid");
@@ -325,7 +229,7 @@ async function download(url, originHost) {
   throw new RequestError(502, "De bron gaf te veel of ongeldige omleidingen.");
 }
 
-const attribute = value => xml(value).replace(/"/g, "&quot;");
+const attribute = value => escapeHtml(value).replace(/"/g, "&quot;");
 
 function previewTime(value) {
   const [date, clock] = extended(value).split("T");
@@ -333,12 +237,12 @@ function previewTime(value) {
   return `${day}-${month}-${year}${clock ? " " + clock.slice(0, 5) : " · hele dag"}`;
 }
 
-function previewResults(calendars, target, calendarUrl, xmlUrl) {
+function previewResults(calendars, target, calendarUrl) {
   const events = calendars.flatMap(calendar => calendar.children.filter(component => component.name === "vevent"))
     .slice(0, 10);
   const rows = events.map(event => {
     const field = name => event.properties.find(property => property.name === name)?.value;
-    const title = xml(unescapeText(field("summary") || "Naamloze afspraak"));
+    const title = escapeHtml(unescapeText(field("summary") || "Naamloze afspraak"));
     const start = field("dtstart");
     const end = field("dtend");
     // An all-day DTEND is the first day after the event.
@@ -349,9 +253,9 @@ function previewResults(calendars, target, calendarUrl, xmlUrl) {
   return `<section aria-labelledby="result">
 <h2 id="result">Aangepaste kalender</h2>
 <label>Abonnements-URL voor Google Agenda (.ics)<input readonly spellcheck="false" value="${attribute(calendarUrl)}"></label>
-<p><a href="${attribute(calendarUrl)}">Open .ics</a> · <a href="${attribute(xmlUrl)}">Open xCal (XML)</a></p>
+<p><a href="${attribute(calendarUrl)}">Open .ics</a></p>
 <h3>Eerste afspraken</h3>
-<p>Tijdzone ${xml(target)}. Maximaal 10 afspraken in de volgorde van de bronfeed.</p>
+<p>Tijdzone ${escapeHtml(target)}. Maximaal 10 afspraken in de volgorde van de bronfeed.</p>
 ${rows ? `<ul class="events">${rows}</ul>` : "<p>De bronfeed bevat geen afspraken.</p>"}
 </section>`;
 }
@@ -399,7 +303,7 @@ export default {
       target: path.searchParams.get("to") || "Europe/Amsterdam"
     };
     const failure = (message, status) => preview
-      ? reply(page({ ...form, result: `<p role="alert">${xml(message)}</p>` }), status, html)
+      ? reply(page({ ...form, result: `<p role="alert">${escapeHtml(message)}</p>` }), status, html)
       : reply(message, status, plain);
     if (request.method !== "GET") return reply("Gebruik GET.", 405, plain, { Allow: "GET" });
     if (path.pathname === "/" && !path.search) return reply(page(), 200, html);
@@ -417,14 +321,9 @@ export default {
       if (preview) {
         const calendarUrl = new URL("/calendar.ics", path);
         calendarUrl.search = new URLSearchParams({ url: sourceUrl, to: target });
-        const xmlUrl = new URL("/convert", path);
-        xmlUrl.search = calendarUrl.search;
-        return reply(page({ sourceUrl, target, result: previewResults(calendars, target, calendarUrl.href, xmlUrl.href) }), 200, html);
+        return reply(page({ sourceUrl, target, result: previewResults(calendars, target, calendarUrl.href) }), 200, html);
       }
-      if (path.pathname === "/calendar.ics") {
-        return reply(toIcs(calendars, target), 200, "text/calendar; charset=utf-8");
-      }
-      return reply(toXcal(calendars, target), 200, "application/calendar+xml; charset=utf-8");
+      return reply(toIcs(calendars, target), 200, "text/calendar; charset=utf-8");
     } catch (error) {
       if (error instanceof RequestError) return failure(error.message, error.status);
       if (error.name === "TimeoutError" || error.name === "AbortError") {
