@@ -738,6 +738,10 @@ ${eventCard(originals.get(event), "Original", "")}
 ${updated.has(event) ? eventCard(event.properties, "Updated", target)
     : '<div class="event-card filtered"><h4>Updated</h4><p>Excluded by the event filter.</p></div>'}
 </li>`).join("");
+  const sourceView = new URL(calendarUrl);
+  sourceView.search = new URLSearchParams({ url: sourceView.searchParams.get("url"), view: "raw" });
+  const outputView = new URL(calendarUrl);
+  outputView.searchParams.set("view", "raw");
   const names = originalNames.map((name, index) => `<dl class="calendar-comparison">
 <div class="event-card"><dt>Original calendar name</dt><dd>${escapeHtml(name)}</dd></div>
 <div class="event-card"><dt>Updated calendar name</dt><dd>${escapeHtml(updatedNames[index])}</dd></div>
@@ -750,6 +754,10 @@ ${updated.has(event) ? eventCard(event.properties, "Updated", target)
 <button id="copy-calendar-url" type="button">Copy link</button>
 </div>
 <p id="copy-status" role="status"></p>
+<div class="raw-links">
+<a href="${attribute(sourceView.href)}" target="_blank" rel="noopener noreferrer">View source ICS</a>
+<a href="${attribute(outputView.href)}" target="_blank" rel="noopener noreferrer">View output ICS</a>
+</div>
 
 <h3 id="events">Compare Calendar</h3>
 ${names}
@@ -825,6 +833,8 @@ section{margin-top:1.5rem;padding:1.5rem;background:white;border:1px solid #cbd7
 section h2{margin-top:0}
 .calendar-link{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.3rem}
 .calendar-link input{flex:1 1 12rem;min-width:0;width:auto}
+.raw-links{display:flex;flex-wrap:wrap;gap:.4rem 1rem;margin-top:.7rem}
+.raw-links a{color:#145361;text-underline-offset:.15em}
 #copy-status{margin:.4rem 0 0}#copy-status:empty{margin:0}
 .pagination{display:flex;flex-wrap:wrap;align-items:center;gap:.65rem;padding:0;margin:0 0 .75rem;border:0}
 .pagination select{width:auto;max-width:100%}
@@ -978,7 +988,8 @@ export default {
       const descriptionEdits = editDescriptions ? readTextEdits(query, "description") : new URLSearchParams();
       const url = validateSource(sourceUrl, path.hostname);
       const input = await download(url, path.hostname);
-      const calendarType = "text/calendar; charset=utf-8";
+      const calendarType = path.pathname === "/calendar.ics" && query.get("view") === "raw"
+        ? plain : "text/calendar; charset=utf-8";
       if (!preview && !target && !edits.size && !descriptionEdits.size && !extras.size) return reply(input, 200, calendarType);
       const calendars = parseCalendar(new TextDecoder().decode(input));
       const originalNames = preview ? calendarNames(calendars) : null;
