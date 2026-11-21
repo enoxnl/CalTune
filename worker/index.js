@@ -726,7 +726,13 @@ function previewResults(originals, updated, target, calendarUrl, query, original
     : 1;
   const startIndex = (currentPage - 1) * pageSize;
   const pageEvents = events.slice(startIndex, startIndex + pageSize);
-  const pagination = pageCount > 1 ? previewPagination(query, currentPage, pageCount) : "";
+  const excluded = events.length - updated.size;
+  const summary = pageEvents.length
+    ? `Showing ${startIndex + 1}–${startIndex + pageEvents.length} of ${events.length} source events.`
+    : "";
+  const eventCount = summary + (excluded ? ` ${excluded} excluded by the filter.` : "");
+  const pagination = pageCount > 1 ? previewPagination(query, currentPage, pageCount, eventCount)
+    : eventCount ? `<p>${eventCount}</p>` : "";
   const rows = pageEvents.map(event => `<li class="event-comparison">
 ${eventCard(originals.get(event), "Original", "")}
 ${updated.has(event) ? eventCard(event.properties, "Updated", target)
@@ -747,15 +753,12 @@ ${updated.has(event) ? eventCard(event.properties, "Updated", target)
 
 <h3 id="events">Compare Calendar</h3>
 ${names}
-<p>${target ? `Time zone ${escapeHtml(target)}.` : "Times and time zones match the source feed."}
-${pageEvents.length ? `Showing ${startIndex + 1}–${startIndex + pageEvents.length} of ${events.length} source events.` : ""}
-${updated.size < events.length ? `${events.length - updated.size} excluded by the filter.` : ""}</p>
 ${pagination}
 ${rows ? `<ul class="events">${rows}</ul>` : "<p>The source feed contains no events.</p>"}
 </section>`;
 }
 
-function previewPagination(query, currentPage, pageCount) {
+function previewPagination(query, currentPage, pageCount, eventCount) {
   const previewFields = ["url", "force", "timezone", "forcetimezone", "to", "title-form", "edit-titles",
     "title-prefix", "title-suffix", "title-find", "title-replace", "title-remove", "extras-form",
     "description-form", "edit-descriptions", "description-prefix", "description-suffix", "description-find", "description-replace",
@@ -771,6 +774,7 @@ ${fields}
 <label for="preview-page">Page</label>
 <select id="preview-page" name="page">${options}</select>
 <noscript><button type="submit">Show page</button></noscript>
+<span class="event-count">${eventCount}</span>
 </form>`;
 }
 
@@ -822,8 +826,9 @@ section h2{margin-top:0}
 .calendar-link{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.3rem}
 .calendar-link input{flex:1 1 12rem;min-width:0;width:auto}
 #copy-status{margin:.4rem 0 0}#copy-status:empty{margin:0}
-.pagination{display:flex;align-items:center;gap:.65rem;padding:0;margin:0 0 .75rem;border:0}
+.pagination{display:flex;flex-wrap:wrap;align-items:center;gap:.65rem;padding:0;margin:0 0 .75rem;border:0}
 .pagination select{width:auto;max-width:100%}
+.event-count{flex:1 1 12rem}
 .events{margin:0;padding:0;list-style:none}
 .calendar-comparison,.event-comparison{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.65rem}
 .calendar-comparison dt{font-weight:600;font-size:.875rem}.calendar-comparison dd{margin:0}
