@@ -285,7 +285,7 @@ function foldCalendarLine(line) {
 }
 
 function toIcs(calendars, target) {
-  const zone = iCalendarTimeZone(target);
+  const zone = target ? iCalendarTimeZone(target) : null;
   const parameterValue = value => {
     const encoded = value.replaceAll("^", "^^").replaceAll('"', "^'").replaceAll("\n", "^n");
     return /[;:,]/.test(encoded) ? `"${encoded}"` : encoded;
@@ -304,7 +304,7 @@ function toIcs(calendars, target) {
         const parameters = new Map(property.parameters);
         const type = parameters.get("value")?.[0].toLowerCase() || appointmentTypes[property.name] || "date-time";
         let value = property.value;
-        if (rewrite && appointmentFields.has(property.name) && (type === "date-time" || type === "period")) {
+        if (zone && rewrite && appointmentFields.has(property.name) && (type === "date-time" || type === "period")) {
           parameters.delete("tzid");
           // A series uses its local clock across DST. Standalone instants are unambiguous in UTC.
           const local = recurring && target !== "UTC" && property.name !== "trigger";
@@ -390,6 +390,73 @@ async function download(url, originHost) {
 
 const attribute = value => escapeHtml(value).replace(/"/g, "&quot;");
 
+const titleFields = [
+  ["title-find", "Find text"],
+  ["title-replace", "Replace with"],
+  ["title-remove", "Remove text"],
+  ["title-prefix", "Add before the title"],
+  ["title-suffix", "Add after the title"]
+];
+
+function titleEdits(query) {
+  const edits = new Map();
+  for (const [name] of titleFields) {
+    const values = query.getAll(name);
+    if (values.length > 1 || (values[0] && (values[0].length > 160 || /[\r\n]/.test(values[0])))) {
+      throw new RequestError(400, "Use one line of up to 160 characters per title field.");
+    }
+    if (values[0]?.trim()) edits.set(name, values[0]);
+  }
+  if (edits.has("title-replace") && !edits.has("title-find")) {
+    throw new RequestError(400, "Enter the text you want to replace in Find text.");
+  }
+  return edits;
+}
+
+function editEventTitles(calendars, edits) {
+  const find = edits.get("title-find");
+  const replace = edits.get("title-replace") || "";
+  const remove = edits.get("title-remove");
+  const prefix = edits.get("title-prefix")?.trim();
+  const suffix = edits.get("title-suffix")?.trim();
+  let growth = 0;
+
+  for (const calendar of calendars) {
+    for (const event of calendar.children) {
+      if (event.name !== "vevent") continue;
+      const summary = event.properties.find(property => property.name === "summary");
+      const original = unescapeText(summary?.value || "");
+      if (original.length > 8192 && find && replace.length > find.length && original.includes(find)) {
+        throw new RequestError(422, "This replacement would make an event title too large.");
+      }
+      let title = find ? original.replaceAll(find, () => replace) : original;
+      if (remove) title = title.replaceAll(remove, "");
+      if (title !== original) title = title.trim();
+      if (prefix || suffix) title = [prefix, title, suffix].filter(Boolean).join(" ");
+      if (title === original) continue;
+      growth += Math.max(0, title.length - original.length);
+      if (growth > MAX_BYTES) throw new RequestError(422, "These edits would make the calendar too large.");
+      const value = title.replaceAll("\\", "\\\\").replaceAll("\n", "\\n")
+        .replaceAll(",", "\\,").replaceAll(";", "\\;");
+      if (summary) summary.value = value;
+      else event.properties.push({ name: "summary", parameters: new Map(), value });
+    }
+  }
+}
+
+function titleFieldsHtml(values) {
+  const input = ([name, label]) =>
+    `<label>${label}<input name="${name}" maxlength="160" value="${attribute(values.get(name) || "")}"></label>`;
+  const [find, replace, remove, prefix, suffix] = titleFields.map(input);
+  return `<details class="title-edits"${[...values.values()].some(value => value.trim()) ? " open" : ""}>
+<summary>Edit event titles</summary>
+<p>Rules apply to every title and match exact text, including capitalization. Leave unused fields blank.</p>
+<div class="edit-row">${find}${replace}</div>
+${remove}
+<div class="edit-row">${prefix}${suffix}</div>
+</details>`;
+}
+
 function previewTime(value) {
   const [date, clock] = extended(value).split("T");
   const [year, month, day] = date.split("-");
@@ -432,7 +499,7 @@ function timeZoneOptions(selected) {
     `<option value="${attribute(zone)}"${zone === active ? " selected" : ""}>${escapeHtml(zone)}</option>`).join("");
 }
 
-function page({ sourceUrl = "", target = "", force = false, result = "" } = {}) {
+function page({ sourceUrl = "", target = "", force = false, edits = new Map(), result = "" } = {}) {
   return `<!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer"><title>CalTune</title>
@@ -447,6 +514,11 @@ input,select{width:100%;border:1px solid #758a9a;color:inherit}
 .force-zone{display:grid;gap:.75rem}.force-zone .zone-select{display:none}
 .force-zone:has(input:checked) .zone-select{display:grid}
 select{appearance:none;padding-right:2.5rem;background:linear-gradient(45deg,transparent 50%,#173047 50%) right 1.2rem center/6px 6px no-repeat,linear-gradient(135deg,#173047 50%,transparent 50%) right .85rem center/6px 6px no-repeat,#fff}
+.title-edits{border:1px solid #cbd7e0;border-radius:.5rem;padding:.75rem}
+.title-edits summary{cursor:pointer;font-weight:650}
+.title-edits p{margin:.65rem 0}
+.edit-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,12rem),1fr));gap:.75rem}
+.title-edits>.edit-row,.title-edits>label{margin-top:.75rem}
 button{border:0;background:#145361;color:white;font-weight:700;cursor:pointer}
 a{color:#145361;text-decoration-thickness:.1em;text-underline-offset:.15em}
 section{margin-top:1.5rem;padding:1.5rem;background:white;border:1px solid #cbd7e0;border-radius:1rem}
@@ -465,6 +537,7 @@ p[role=alert]{padding:1rem;background:#fff4f1;color:#61231d;border-radius:.45rem
 <label class="force-option"><input type="checkbox" name="force" value="1"${force ? " checked" : ""}>Force timezone</label>
 <label class="zone-select">Target time zone<select name="timezone">${timeZoneOptions(target)}</select></label>
 </div>
+${titleFieldsHtml(edits)}
 <button>Show calendar and events</button></form>
 ${result}</main></html>`;
 }
@@ -508,7 +581,8 @@ export default {
     const form = {
       sourceUrl: query.get("url") || "",
       target: force ? query.get(useForm ? "timezone" : zoneParameter) || "" : "",
-      force
+      force,
+      edits: new Map(titleFields.map(([name]) => [name, query.get(name) || ""]))
     };
     const failure = (message, status) => preview
       ? reply(page({ ...form, result: `<p role="alert">${escapeHtml(message)}</p>` }), status, html)
@@ -524,16 +598,19 @@ export default {
       const zones = force ? query.getAll(useForm ? "timezone" : zoneParameter) : [];
       if (force && (zones.length !== 1 || !zones[0])) throw new RequestError(400, "Select a target time zone.");
       const target = force ? timeZone(zones[0]) : "";
+      const edits = titleEdits(query);
       const url = validateSource(sourceUrl, path.hostname);
       const input = await download(url, path.hostname);
       const calendarType = "text/calendar; charset=utf-8";
-      if (!preview && !target) return reply(input, 200, calendarType);
+      if (!preview && !target && !edits.size) return reply(input, 200, calendarType);
       const calendars = parseCalendar(new TextDecoder().decode(input));
+      if (edits.size) editEventTitles(calendars, edits);
       if (preview) {
         const calendarUrl = new URL("/calendar.ics", path);
         calendarUrl.searchParams.set("url", sourceUrl);
         if (target) calendarUrl.searchParams.set("forcetimezone", target);
-        return reply(page({ sourceUrl, target, force, result: previewResults(calendars, target, calendarUrl.href) }), 200, html);
+        for (const [name, value] of edits) calendarUrl.searchParams.set(name, value);
+        return reply(page({ sourceUrl, target, force, edits, result: previewResults(calendars, target, calendarUrl.href) }), 200, html);
       }
       return reply(toIcs(calendars, target), 200, calendarType);
     } catch (error) {

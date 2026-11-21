@@ -12,3 +12,5 @@ Gebruik een publiek bereikbare HTTPS- of webcal-URL. Met de optionele parameter 
 
 Heledagafspraken houden hun kalenderdatum. Begin- en eindtijden en expliciete herhaaldatums krijgen de doelzone. Bestaande links met `to` werken als `forcetimezone` ontbreekt. Een bestaande `from`-parameter wordt genegeerd. Een eventuele UTC-eindgrens (`UNTIL`) in een herhaalregel blijft behouden.
 
+
+Optionele titelbewerkingen worden in deze volgorde uitgevoerd: `title-find` met `title-replace`, `title-remove`, dan `title-prefix` en `title-suffix`. Er wordt hoofdlettergevoelig op letterlijke tekst gezocht. Deze parameters zijn te combineren met `forcetimezone`.
