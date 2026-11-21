@@ -503,10 +503,18 @@ function previewTime(value) {
   return `${day}-${month}-${year}${clock ? " " + clock.slice(0, 5) : " · all day"}`;
 }
 
-function previewResults(calendars, target, calendarUrl) {
-  const events = calendars.flatMap(calendar => calendar.children.filter(component => component.name === "vevent"))
-    .slice(0, 10);
-  const rows = events.map(event => {
+function previewResults(calendars, target, calendarUrl, query) {
+  const events = calendars.flatMap(calendar => calendar.children.filter(component => component.name === "vevent"));
+  const pageSize = 10;
+  const pageCount = Math.max(1, Math.ceil(events.length / pageSize));
+  const requestedPage = Number(query.get("page"));
+  const currentPage = Number.isSafeInteger(requestedPage)
+    ? Math.max(1, Math.min(requestedPage, pageCount))
+    : 1;
+  const startIndex = (currentPage - 1) * pageSize;
+  const pageEvents = events.slice(startIndex, startIndex + pageSize);
+  const pagination = pageCount > 1 ? previewPagination(query, currentPage, pageCount) : "";
+  const rows = pageEvents.map(event => {
     const field = name => event.properties.find(property => property.name === name)?.value;
     const title = escapeHtml(unescapeText(field("summary") || "Untitled event"));
     const start = field("dtstart");
@@ -526,10 +534,29 @@ function previewResults(calendars, target, calendarUrl) {
 <p id="copy-status" role="status"></p>
 
 <p><a href="${attribute(calendarUrl)}">Open .ics</a></p>
-<h3>First events</h3>
-<p>${target ? `Time zone ${escapeHtml(target)}.` : "Times and time zones match the source feed."} Shows up to 10 events in the order they appear in the source feed.</p>
+<h3 id="events">Events</h3>
+<p>${target ? `Time zone ${escapeHtml(target)}.` : "Times and time zones match the source feed."}
+${pageEvents.length ? `Showing ${startIndex + 1}–${startIndex + pageEvents.length} of ${events.length} events.` : ""}</p>
+${pagination}
 ${rows ? `<ul class="events">${rows}</ul>` : "<p>The source feed contains no events.</p>"}
 </section>`;
+}
+
+function previewPagination(query, currentPage, pageCount) {
+  const previewFields = ["url", "force", "timezone", "forcetimezone", "to", "title-form", "edit-titles",
+    "title-prefix", "title-suffix", "title-find", "title-replace", "title-remove"];
+  const fields = [...query].filter(([name]) => previewFields.includes(name)).map(([name, value]) =>
+    `<input type="hidden" name="${attribute(name)}" value="${attribute(value)}">`).join("");
+  const options = Array.from({ length: pageCount }, (_, index) => {
+    const number = index + 1;
+    return `<option value="${number}"${number === currentPage ? " selected" : ""}>Page ${number} of ${pageCount}</option>`;
+  }).join("");
+  return `<form class="pagination" action="/preview#events" method="get">
+${fields}
+<label for="preview-page">Page</label>
+<select id="preview-page" name="page">${options}</select>
+<noscript><button type="submit">Show page</button></noscript>
+</form>`;
 }
 
 function timeZoneOptions(selected) {
@@ -571,6 +598,8 @@ section h2{margin-top:0}
 .calendar-link{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.3rem}
 .calendar-link input{flex:1 1 12rem;min-width:0;width:auto}
 #copy-status{margin:.4rem 0 0}#copy-status:empty{margin:0}
+.pagination{display:flex;align-items:center;gap:.65rem;padding:0;margin:0 0 .75rem;border:0}
+.pagination select{width:auto;max-width:100%}
 .events{margin:0;padding:0;list-style:none}
 .events li{padding:.8rem 0;border-top:1px solid #cbd7e0;overflow-wrap:anywhere}
 .times{display:flex;flex-wrap:wrap;gap:.25rem 1rem}
@@ -588,6 +617,9 @@ ${result}</main></html>`;
 }
 
 const appScript = `
+const pageSelect = document.getElementById("preview-page");
+pageSelect?.addEventListener("change", () => pageSelect.form.requestSubmit());
+
 const rules = document.getElementById("replacement-rules");
 const template = document.getElementById("replacement-template");
 const addRule = document.getElementById("add-replacement-rule");
@@ -685,7 +717,7 @@ export default {
         calendarUrl.searchParams.set("url", sourceUrl);
         if (target) calendarUrl.searchParams.set("forcetimezone", target);
         for (const [name, value] of edits) calendarUrl.searchParams.append(name, value);
-        return reply(page({ sourceUrl, target, force, edits, editTitles, result: previewResults(calendars, target, calendarUrl.href) }), 200, html);
+        return reply(page({ sourceUrl, target, force, edits, editTitles, result: previewResults(calendars, target, calendarUrl.href, query) }), 200, html);
       }
       return reply(toIcs(calendars, target), 200, calendarType);
     } catch (error) {
