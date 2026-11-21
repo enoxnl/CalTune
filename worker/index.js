@@ -996,6 +996,7 @@ function eventCard(properties, label, target, rangeFirst) {
     ["organizer", "Organizer"], ["attendee", "Attendees"], ["status", "Status"], ["transp", "Availability"],
     ["duration", "Duration"], ["url", "Event URL"]]) {
     const values = properties.filter(property => property.name === name && property.value).map(property => {
+      if (name === "status") return property.value[0].toUpperCase() + property.value.slice(1).toLowerCase();
       if (name === "transp") return availability[property.value] || property.value;
       if (!["organizer", "attendee"].includes(name)) return unescapeText(property.value);
       const address = property.value.replace(/^mailto:/i, "");
