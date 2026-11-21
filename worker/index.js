@@ -679,7 +679,7 @@ ${optionSettings(option.label, `<div class="extra-fields">${hint ? `<p>${hint}</
   }));
 }
 
-function applyExtras(calendars, extras, target, keepProductId) {
+function applyExtras(calendars, extras, target) {
   const include = extras.getAll("include-title").map(value => value.toLowerCase());
   const exclude = extras.getAll("exclude-title").map(value => value.toLowerCase());
   const calendarName = extras.get("calendar-name");
@@ -730,9 +730,11 @@ function applyExtras(calendars, extras, target, keepProductId) {
           child.name !== "valarm" || !child.properties.some(field => hidden.has(field.name)));
       }
     }
-    if (!keepProductId) {
-      calendar.properties = calendar.properties.filter(field => field.name !== "prodid");
-      calendar.properties.push({ name: "prodid", parameters: new Map(), value: CALTUNE_PRODUCT_ID });
+    const originalProductId = calendar.properties.find(field => field.name === "prodid" && field.value.trim());
+    calendar.properties = calendar.properties.filter(field => !["prodid", "x-caltune-orig-prodid"].includes(field.name));
+    calendar.properties.push({ name: "prodid", parameters: new Map(), value: CALTUNE_PRODUCT_ID });
+    if (originalProductId) {
+      calendar.properties.push({ name: "x-caltune-orig-prodid", parameters: new Map(), value: originalProductId.value });
     }
     if (target) {
       calendar.properties = calendar.properties.filter(field => field.name !== "x-wr-timezone");
@@ -813,7 +815,6 @@ function calendarOverview(calendars) {
         ["iCalendar version", value("version")],
         ["Calendar scale", value("calscale")],
         ["Method", value("method")],
-        ["Product ID", value("prodid")],
         ["Calendar URL", value("url")],
         ["Source", value("source")]
       ].filter(([, detail]) => detail !== "")
@@ -858,7 +859,7 @@ ${updated.has(event) ? eventCard(event.properties, "Updated", target)
     : '<div class="event-card filtered"><h4>Updated</h4><p>Excluded by the event filter.</p></div>'}
 </li>`).join("");
   const sourceView = new URL(calendarUrl);
-  sourceView.search = new URLSearchParams({ url: sourceView.searchParams.get("url"), "keep-prodid": "1", view: "raw" });
+  sourceView.search = new URLSearchParams({ url: sourceView.searchParams.get("url"), view: "source" });
   const outputView = new URL(calendarUrl);
   outputView.searchParams.set("view", "raw");
   const names = originalCalendars.map((calendar, index) => `<dl class="calendar-comparison">
@@ -889,7 +890,7 @@ function previewPagination(query, currentPage, pageCount, eventCount) {
   const previewFields = ["url", "force", "timezone", "forcetimezone", "to", "title-form", "edit-titles",
     "title-prefix", "title-suffix", "title-find", "title-replace", "title-remove", "extras-form",
     "description-form", "edit-descriptions", "description-prefix", "description-suffix", "description-find", "description-replace",
-    "published-ttl-amount", "published-ttl-unit", "keep-prodid",
+    "published-ttl-amount", "published-ttl-unit",
     ...extraOptions.flatMap(option => [option.toggle, ...option.fields.map(([name]) => name)])];
   const fields = [...query].filter(([name]) => previewFields.includes(name)).map(([name, value]) =>
     `<input type="hidden" name="${attribute(name)}" value="${attribute(value)}">`).join("");
@@ -913,7 +914,7 @@ function timeZoneOptions(selected) {
     `<option value="${attribute(zone)}"${zone === active ? " selected" : ""}>${escapeHtml(zone)}</option>`).join("");
 }
 
-function page({ sourceUrl = "", target = "", force = false, edits = new URLSearchParams(), editTitles = false, descriptionEdits = new URLSearchParams(), editDescriptions = false, keepProductId = false, extraQuery = new URLSearchParams(), extraForm = false, result = "" } = {}) {
+function page({ sourceUrl = "", target = "", force = false, edits = new URLSearchParams(), editTitles = false, descriptionEdits = new URLSearchParams(), editDescriptions = false, extraQuery = new URLSearchParams(), extraForm = false, result = "" } = {}) {
   const extraPanels = extraFieldsHtml(extraQuery, extraForm);
   return `<!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -991,9 +992,6 @@ ${extraPanels["set-published-ttl"]}
 <div class="option-panel force-zone">
 <label class="force-option"><input type="checkbox" name="force" value="1"${force ? " checked" : ""}>Force timezone</label>
 ${optionSettings("Force timezone", `<label class="zone-select">Target time zone<select name="timezone">${timeZoneOptions(target)}</select></label>`)}
-</div>
-<div class="option-panel">
-<label class="force-option"><input type="checkbox" name="keep-prodid" value="1"${keepProductId ? " checked" : ""}>Keep original product ID</label>
 </div>
 <button>Show calendar and events</button></form>
 ${result}
@@ -1096,7 +1094,6 @@ export default {
       ? query.has("edit-descriptions")
       : [...query].some(([key, value]) => key.startsWith("description-") && value.trim());
     const extraForm = preview && query.has("extras-form");
-    const keepProductId = query.get("keep-prodid") === "1";
     const form = {
       sourceUrl: query.get("url") || "",
       target: force ? query.get(useForm ? "timezone" : zoneParameter) || "" : "",
@@ -1105,7 +1102,6 @@ export default {
       editTitles,
       descriptionEdits: editDescriptions ? query : new URLSearchParams(),
       editDescriptions,
-      keepProductId,
       extraQuery: query,
       extraForm
     };
@@ -1120,26 +1116,22 @@ export default {
       const values = query.getAll("url");
       if (values.length !== 1 || !values[0]) throw new RequestError(400, 'Provide the "url" parameter exactly once.');
       const [sourceUrl] = values;
-      const productIdOptions = query.getAll("keep-prodid");
-      if (productIdOptions.length && (productIdOptions.length !== 1 || !keepProductId)) {
-        throw new RequestError(400, 'Use "keep-prodid=1" to keep the original product ID.');
-      }
+      const url = validateSource(sourceUrl, path.hostname);
+      const view = path.pathname === "/calendar.ics" ? query.get("view") : null;
+      if (view === "source") return reply(await download(url, path.hostname), 200, plain);
       const zones = force ? query.getAll(useForm ? "timezone" : zoneParameter) : [];
       if (force && (zones.length !== 1 || !zones[0])) throw new RequestError(400, "Select a target time zone.");
       const target = force ? timeZone(zones[0]) : "";
       const extras = readExtras(query, extraForm);
       const edits = editTitles ? readTextEdits(query, "title") : new URLSearchParams();
       const descriptionEdits = editDescriptions ? readTextEdits(query, "description") : new URLSearchParams();
-      const url = validateSource(sourceUrl, path.hostname);
       const input = await download(url, path.hostname);
-      const calendarType = path.pathname === "/calendar.ics" && query.get("view") === "raw"
-        ? plain : "text/calendar; charset=utf-8";
-      if (!preview && keepProductId && !target && !edits.size && !descriptionEdits.size && !extras.size) return reply(input, 200, calendarType);
+      const calendarType = view === "raw" ? plain : "text/calendar; charset=utf-8";
       const calendars = parseCalendar(new TextDecoder().decode(input));
       const originalCalendars = preview ? calendarOverview(calendars) : null;
       const originals = preview ? new Map(calendarEvents(calendars).map(event =>
         [event, event.properties.map(property => ({ ...property }))])) : null;
-      if (extras.size || target || !keepProductId) applyExtras(calendars, extras, target, keepProductId);
+      applyExtras(calendars, extras, target);
       if (edits.size) editEventText(calendars, edits, "title", "summary");
       if (descriptionEdits.size && !extras.has("hide-description")) {
         editEventText(calendars, descriptionEdits, "description", "description");
@@ -1148,7 +1140,6 @@ export default {
         const calendarUrl = new URL("/calendar.ics", path);
         calendarUrl.searchParams.set("url", sourceUrl);
         if (target) calendarUrl.searchParams.set("forcetimezone", target);
-        if (keepProductId) calendarUrl.searchParams.set("keep-prodid", "1");
         for (const [name, value] of edits) calendarUrl.searchParams.append(name, value);
         for (const [name, value] of descriptionEdits) calendarUrl.searchParams.append(name, value);
         for (const [name, value] of extras) calendarUrl.searchParams.append(name, value);
