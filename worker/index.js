@@ -528,9 +528,8 @@ const eventStatuses = ["TENTATIVE", "CONFIRMED", "CANCELLED"];
 
 const extraOptions = [
   { toggle: "filter-events", label: "Filter events",
-    fields: [["include-title", "Title contains"], ["exclude-title", "Title excludes"]], multiple: true },
-  { toggle: "limit-date-range", label: "Limit event date range",
-    fields: [["days-back", "Days back"], ["days-ahead", "Days ahead"]], wholeNumbers: true },
+    fields: [["days-back", "Days back", "days"], ["days-ahead", "Days ahead", "days"],
+      ["include-title", "Title contains", "repeat"], ["exclude-title", "Title excludes", "repeat"]] },
   { toggle: "hide-details", label: "Hide event details",
     fields: [["hide-description", "Descriptions"], ["hide-location", "Locations"],
       ["hide-attendees", "Attendees and organizers"], ["hide-status", "Status"], ["hide-event-url", "Event URL"]], checkboxes: true },
@@ -605,23 +604,20 @@ function readExtras(query, useForm) {
   const result = new URLSearchParams();
   for (const option of extraOptions) {
     if (!extraEnabled(query, useForm, option)) continue;
-    for (const [name, label] of option.fields) {
+    for (const [name, label, kind] of option.fields) {
       const values = query.getAll(name);
       if (!values.length) continue;
-      const limit = option.multiple ? MAX_RULES : 1;
+      const limit = kind === "repeat" ? MAX_RULES : 1;
       if (values.length > limit) throw new RequestError(400, `Too many values for ${label}.`);
       for (const value of values) {
         const invalid = option.checkboxes ? value !== "1" : value.length > (option.url ? 2048 : 160) || /[\r\n]/.test(value);
-        const invalidNumber = option.wholeNumbers && value.trim() &&
+        const invalidNumber = kind === "days" && value.trim() &&
           (!/^\d+$/.test(value.trim()) || !Number.isSafeInteger(Number(value)));
         if (invalid || invalidNumber || (value && option.choices && !option.choices.includes(value))) {
           throw new RequestError(400, `Invalid value for ${label}.`);
         }
         if (value.trim()) result.append(name, value.trim());
       }
-    }
-    if (option.wholeNumbers && !option.fields.some(([name]) => result.has(name))) {
-      throw new RequestError(400, "Enter the number of days back, ahead, or both.");
     }
     if (option.toggle === "set-published-ttl") {
       const original = result.get("published-ttl") || "";
@@ -666,26 +662,33 @@ ${optionTextInput(name, label, value)}
 function extraFieldsHtml(query, useForm) {
   return Object.fromEntries(extraOptions.map(option => {
     const enabled = extraEnabled(query, useForm, option);
-    const fields = option.fields.map(([name, label]) => {
+    const fields = option.fields.map(([name, label, kind]) => {
       if (option.toggle === "set-published-ttl") return durationFields(query, enabled);
-      if (option.multiple) return filterRuleFields(name, label, enabled ? query.getAll(name) : []);
+      if (kind === "repeat") return filterRuleFields(name, label, enabled ? query.getAll(name) : []);
       const value = enabled ? query.get(name) : "";
       if (option.choices) {
         const choices = option.choices.map(status => `<option value="${status}"${value === status ? " selected" : ""}>${status[0] + status.slice(1).toLowerCase()}</option>`).join("");
         return `<label>${label}<select name="${name}"><option value="">Select a status</option>${choices}</select></label>`;
       }
-      if (option.wholeNumbers) {
+      if (kind === "days") {
         return `<label>${label}<input name="${name}" type="number" min="0" step="1" value="${attribute(value || "")}"></label>`;
       }
       if (option.url) return optionTextInput(name, label, value || "", "url", 2048);
       if (!option.checkboxes) return optionTextInput(name, label, value || "");
       return `<label class="force-option"><input type="checkbox" name="${name}" value="1"${value === "1" ? " checked" : ""}>${label}</label>`;
-    }).join("");
-    const hint = option.toggle === "filter-events" ? "Matches the original event title, regardless of capitalization."
-      : option.wholeNumbers ? "Use 0 for today. Leave a side blank for no limit. The range uses each event’s start date." : "";
+    });
+    const content = option.toggle === "filter-events"
+      ? `<fieldset class="filter-rules">
+<legend>Date range</legend>
+<p>Use 0 for today. Leave a side blank for no limit. The range uses each event’s start date.</p>
+<div class="edit-row">${fields.slice(0, 2).join("")}</div>
+</fieldset>
+<p>Title rules match the original event title, regardless of capitalization.</p>
+${fields.slice(2).join("")}`
+      : fields.join("");
     return [option.toggle, `<div class="option-panel extra-option">
 <label class="force-option"><input class="extra-toggle" type="checkbox" name="${option.toggle}" value="1"${enabled ? " checked" : ""}>${option.label}</label>
-${optionSettings(option.label, `<div class="extra-fields">${hint ? `<p>${hint}</p>` : ""}${option.wholeNumbers ? `<div class="edit-row">${fields}</div>` : fields}</div>`)}
+${optionSettings(option.label, `<div class="extra-fields">${content}</div>`)}
 </div>`];
   }));
 }
@@ -1028,12 +1031,14 @@ select{appearance:none;padding-right:2.5rem;background:linear-gradient(45deg,tra
 .edit-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,12rem),1fr));gap:.75rem}
 .filter-rules{min-width:0;margin:0;padding:.65rem;border:1px solid #cbd7e0;border-radius:.4rem}
 .filter-rules legend{font-weight:600;padding:0 .25rem}
+.filter-rules > p{margin-bottom:.55rem}
 .filter-rule{grid-template-columns:minmax(0,1fr) auto;align-items:end;margin-bottom:.75rem}
 .replacement-rule{grid-template-columns:repeat(2,minmax(0,1fr)) auto;align-items:end;margin-bottom:.75rem}
 .secondary{background:white;color:#145361;border:1px solid #758a9a}
 .secondary:disabled{opacity:.5;cursor:default}
 @media(max-width:36rem){.filter-rules{min-width:0;margin:0;padding:.65rem;border:1px solid #cbd7e0;border-radius:.4rem}
 .filter-rules legend{font-weight:600;padding:0 .25rem}
+.filter-rules > p{margin-bottom:.55rem}
 .filter-rule{grid-template-columns:minmax(0,1fr) auto;align-items:end;margin-bottom:.75rem}
 .replacement-rule{grid-template-columns:1fr}.replacement-rule button{justify-self:start}}
 button{border:0;background:#145361;color:white;font-weight:700;cursor:pointer}
@@ -1074,7 +1079,6 @@ p[role=alert]{padding:1rem;background:#fff4f1;color:#61231d;border-radius:.45rem
 <input type="hidden" name="extras-form" value="1">
 ${extraPanels["rename-calendar"]}
 ${extraPanels["filter-events"]}
-${extraPanels["limit-date-range"]}
 ${textFieldsHtml("title", edits, editTitles)}
 ${textFieldsHtml("description", descriptionEdits, editDescriptions)}
 ${extraPanels["hide-details"]}
