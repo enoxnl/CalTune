@@ -8,6 +8,11 @@ rm -rf "$dist_root"
 mkdir -p "$dist_root/server" "$dist_root/.openai"
 commit=$(git -C "$project_root" rev-parse --verify HEAD 2>/dev/null || true)
 {
+  for asset in logo icon; do
+    printf 'const %sPng = "' "$asset"
+    base64 -w0 "$project_root/worker/assets/$asset.png"
+    printf '";\n'
+  done
   printf '%s\n' 'const ICAL = (() => {'
   sed 's/^export { ICALmodule as default };$/return ICALmodule;/' "$project_root/worker/vendor/ical-2.2.1.js"
   printf '%s\n' '})();'

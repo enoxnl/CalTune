@@ -1189,10 +1189,11 @@ function page({ sourceUrl = "", target = "", force = false, edits = new URLSearc
   return `<!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer"><title>CalTune</title>
+<link rel="icon" type="image/png" href="/brand-icon.png">
 <script src="/app.js" defer></script>
 <style>
 *{box-sizing:border-box}body{margin:0;background:#eef3f7;color:#173047;font:1rem/1.5 system-ui,sans-serif}
-main{max-width:40rem;margin:clamp(2rem,9vw,7rem) auto;padding:0 1rem}h1{font-size:2.6rem;line-height:1.1;margin:0}
+main{max-width:40rem;margin:clamp(2rem,9vw,7rem) auto;padding:0 1rem}h1{margin:0}.brand-logo{display:block;width:min(13rem,100%);height:auto}
 .source-field{display:grid;gap:.35rem}
 button.text-button{justify-self:end;background:none;color:#145361;font-weight:500;text-decoration:underline;padding:.2rem 0}
 .import-dialog{width:min(32rem,calc(100% - 2rem));padding:0;border:1px solid #cbd7e0;border-radius:1rem;color:inherit}
@@ -1258,7 +1259,7 @@ section h2{margin-top:0}
 footer{display:flex;flex-wrap:wrap;gap:.4rem 1rem;margin-top:1.5rem;padding:.8rem 0;border-top:1px solid #cbd7e0;font-size:.875rem}
 footer a{color:#145361}
 p[role=alert]{padding:1rem;background:#fff4f1;color:#61231d;border-radius:.45rem}
-</style><main><h1>CalTune</h1><p>Customize an existing calendar feed and get a new .ics subscription link.</p>
+</style><main><h1><img class="brand-logo" src="/brand-logo.png" alt="CalTune"></h1><p>Customize an existing calendar feed and get a new .ics subscription link.</p>
 <form action="/preview" method="get">
 <div class="source-field">
 <label>Source URL<input name="url" required value="${attribute(sourceUrl)}" placeholder="https://…/calendar.ics"></label>
@@ -1410,7 +1411,7 @@ button?.addEventListener("click", async () => {
 function reply(body, status, type, extra = {}) {
   return new Response(body, { status, headers: {
     "Content-Type": type, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
-    "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; form-action 'self'",
+    "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; img-src 'self'; form-action 'self'",
     ...extra
   } });
 }
@@ -1447,6 +1448,10 @@ export default {
       ? reply(page({ ...form, result: `<p role="alert">${escapeHtml(message)}</p>` }), status, html)
       : reply(message, status, plain);
     if (request.method !== "GET") return reply("Use GET.", 405, plain, { Allow: "GET" });
+    if (path.pathname === "/brand-logo.png" || path.pathname === "/brand-icon.png") {
+      const asset = path.pathname === "/brand-logo.png" ? logoPng : iconPng;
+      return reply(Uint8Array.from(atob(asset), character => character.charCodeAt(0)), 200, "image/png");
+    }
     if (path.pathname === "/app.js") return reply(appScript, 200, "text/javascript; charset=utf-8");
     if (path.pathname === "/" && !path.search) return reply(page(), 200, html);
     if (!["/", "/convert", "/preview", "/calendar.ics"].includes(path.pathname)) return reply("Route not found.", 404, plain);

@@ -41,3 +41,5 @@ Gebruik voor titels of beschrijvingen maximaal twaalf paren van zoek- en vervang
 Bij een datumbereik worden afzonderlijke herhalingen beoordeeld. Met een eindgrens legt CalTune de overgebleven herhalingen vast als `RDATE`. Zonder eindgrens blijft de herhaalregel actief en worden eerdere datums uitgesloten. Uitzonderingen met `RANGE=THISANDFUTURE` kunnen via **Keep recurring series unchanged** worden behouden.
 
 De uitvoer vermeldt CalTune als producent in `PRODID` en bewaart een aanwezige bronwaarde in `X-CALTUNE-ORIG-PRODID`. Herhaalregels worden verwerkt met de meegeleverde [ical.js 2.2.1](https://github.com/kewisch/ical.js/tree/v2.2.1) onder de Mozilla Public License 2.0.
+
+Het CalTune-logo en favicon worden bij de build opgenomen vanuit `worker/assets/`.
