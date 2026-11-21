@@ -181,7 +181,7 @@ function contentLine(line) {
         const name = parts.shift().toLowerCase();
         const parameters = new Map(parts.map(part => {
           const equals = part.indexOf("=");
-          if (equals < 1) throw new RequestError(422, "Ongeldige iCalendar-parameter.");
+          if (equals < 1) throw new RequestError(422, "Invalid iCalendar parameter.");
           const values = part.slice(equals + 1).split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/)
             .map(value => value.replace(/^"|"$/g, "").replace(/\^(\^|n|')/gi,
               (_, code) => code === "^" ? "^" : code === "'" ? '"' : "\n"));
@@ -191,7 +191,7 @@ function contentLine(line) {
       }
     }
   }
-  throw new RequestError(422, "Ongeldige iCalendar-regel.");
+  throw new RequestError(422, "Invalid iCalendar line.");
 }
 
 function parseCalendar(input) {
@@ -202,7 +202,7 @@ function parseCalendar(input) {
     const property = contentLine(line);
     const parent = stack.at(-1);
     if (property.name === "begin") {
-      if (stack.length >= 16) throw new RequestError(422, "Kalender bevat te veel geneste onderdelen.");
+      if (stack.length >= 16) throw new RequestError(422, "The calendar contains too many nested components.");
       const child = { name: property.value.toLowerCase(), properties: [], children: [] };
       parent.children.push(child);
       stack.push(child);
@@ -211,11 +211,11 @@ function parseCalendar(input) {
     } else if (stack.length > 1 && property.name !== "end") {
       parent.properties.push(property);
     } else {
-      throw new RequestError(422, "Ongeldige iCalendar-structuur.");
+      throw new RequestError(422, "Invalid iCalendar structure.");
     }
   }
   if (stack.length !== 1 || !root.children.length || root.children.some(child => child.name !== "vcalendar")) {
-    throw new RequestError(422, "De bron bevat geen volledige iCalendar-kalender.");
+    throw new RequestError(422, "The source does not contain a complete iCalendar feed.");
   }
   return root.children;
 }
@@ -225,13 +225,13 @@ function timeZone(name) {
     if (!/^[a-z][a-z0-9_+/-]*$/i.test(name)) throw new RangeError();
     return new Intl.DateTimeFormat("en", { timeZone: name }).resolvedOptions().timeZone;
   } catch {
-    throw new RequestError(400, "Gebruik een geldige IANA-tijdzone, bijvoorbeeld Europe/Amsterdam.");
+    throw new RequestError(400, "Enter a valid IANA time zone, such as Europe/Amsterdam.");
   }
 }
 
 function extended(value) {
   const match = /^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z)?)?$/.exec(value);
-  if (!match) throw new RequestError(422, "Ongeldige datum of tijd in de kalender.");
+  if (!match) throw new RequestError(422, "Invalid date or time in the calendar.");
   const [, year, month, day, hour, minute, second, utc] = match;
   const date = `${year}-${month}-${day}`;
   return hour === undefined ? date : `${date}T${hour}:${minute}:${second}${utc || ""}`;
@@ -252,7 +252,7 @@ function utcAppointment(value, zone) {
   const clock = extended(value).replace(/Z$/, "");
   const nominal = Date.parse(clock + "Z");
   if (!Number.isFinite(nominal) || new Date(nominal).toISOString().slice(0, 19) !== clock) {
-    throw new RequestError(422, "Ongeldige datum of tijd in de kalender.");
+    throw new RequestError(422, "Invalid date or time in the calendar.");
   }
   const wallTime = instant => {
     const p = Object.fromEntries(zone.formatToParts(instant).map(({ type, value }) => [type, value]));
@@ -329,14 +329,14 @@ function validateSource(value, originHost) {
   try {
     url = new URL(value.replace(/^webcal:/i, "https:"));
   } catch {
-    throw new RequestError(400, "Geef een geldige HTTPS- of webcal-bron-URL op.");
+    throw new RequestError(400, "Enter a valid HTTPS or webcal source URL.");
   }
   const hostname = url.hostname.toLowerCase().replace(/\.$/, "");
   if (url.protocol !== "https:" || url.username || url.password || url.port || url.hash ||
       !/^(?:[a-z0-9-]+\.)+[a-z][a-z0-9-]*$/.test(hostname) ||
       /.(?:localhost|local|internal|onion|test|invalid|example|home|lan)$/.test(hostname) ||
       hostname === originHost.toLowerCase().replace(/\.$/, "")) {
-    throw new RequestError(400, "Gebruik een publieke HTTPS-bron-URL zonder poort, fragment of inloggegevens.");
+    throw new RequestError(400, "Use a public HTTPS source URL without a port, fragment, or credentials.");
   }
   return url;
 }
@@ -358,11 +358,11 @@ async function download(url, originHost) {
     }
     if (!response.ok || !response.body) {
       await response.body?.cancel();
-      throw new RequestError(502, `De kalenderbron is niet beschikbaar (HTTP ${response.status}).`);
+      throw new RequestError(502, `The source calendar is unavailable (HTTP ${response.status}).`);
     }
     if (Number(response.headers.get("content-length")) > MAX_BYTES) {
       await response.body.cancel();
-      throw new RequestError(413, "De kalender is groter dan 2 MiB.");
+      throw new RequestError(413, "The calendar exceeds 2 MiB.");
     }
     const reader = response.body.getReader();
     const chunks = [];
@@ -373,7 +373,7 @@ async function download(url, originHost) {
       size += value.byteLength;
       if (size > MAX_BYTES) {
         await reader.cancel();
-        throw new RequestError(413, "De kalender is groter dan 2 MiB.");
+        throw new RequestError(413, "The calendar exceeds 2 MiB.");
       }
       chunks.push(value);
     }
@@ -385,7 +385,7 @@ async function download(url, originHost) {
     }
     return contents;
   }
-  throw new RequestError(502, "De bron gaf te veel of ongeldige omleidingen.");
+  throw new RequestError(502, "The source returned too many redirects or an invalid redirect.");
 }
 
 const attribute = value => escapeHtml(value).replace(/"/g, "&quot;");
@@ -393,7 +393,7 @@ const attribute = value => escapeHtml(value).replace(/"/g, "&quot;");
 function previewTime(value) {
   const [date, clock] = extended(value).split("T");
   const [year, month, day] = date.split("-");
-  return `${day}-${month}-${year}${clock ? " " + clock.slice(0, 5) : " · hele dag"}`;
+  return `${day}-${month}-${year}${clock ? " " + clock.slice(0, 5) : " · all day"}`;
 }
 
 function previewResults(calendars, target, calendarUrl) {
@@ -401,40 +401,40 @@ function previewResults(calendars, target, calendarUrl) {
     .slice(0, 10);
   const rows = events.map(event => {
     const field = name => event.properties.find(property => property.name === name)?.value;
-    const title = escapeHtml(unescapeText(field("summary") || "Naamloze afspraak"));
+    const title = escapeHtml(unescapeText(field("summary") || "Untitled event"));
     const start = field("dtstart");
     const end = field("dtend");
     // An all-day DTEND is the first day after the event.
-    const endLabel = end && end.includes("T") ? `<span>Einde ${previewTime(end)}</span>` : "";
-    return `<li><strong>${title}</strong><div class="times">${start ? `<span>Begin ${previewTime(start)}</span>` : ""}
+    const endLabel = end && end.includes("T") ? `<span>End ${previewTime(end)}</span>` : "";
+    return `<li><strong>${title}</strong><div class="times">${start ? `<span>Start ${previewTime(start)}</span>` : ""}
       ${endLabel}</div></li>`;
   }).join("");
   return `<section aria-labelledby="result">
-<h2 id="result">Kalender</h2>
-<label for="calendar-url">Abonnements-URL voor Google Agenda (.ics)</label>
+<h2 id="result">Calendar</h2>
+<label for="calendar-url">Google Calendar subscription URL (.ics)</label>
 <div class="calendar-link">
 <input id="calendar-url" readonly spellcheck="false" value="${attribute(calendarUrl)}">
-<button id="copy-calendar-url" type="button">Kopieer link</button>
+<button id="copy-calendar-url" type="button">Copy link</button>
 </div>
 <p id="copy-status" role="status"></p>
 <script src="/copy-link.js" defer></script>
 <p><a href="${attribute(calendarUrl)}">Open .ics</a></p>
-<h3>Eerste afspraken</h3>
-<p>${target ? `Tijdzone ${escapeHtml(target)}.` : "Tijden en tijdzones uit de bronfeed."} Maximaal 10 afspraken in de volgorde van de bronfeed.</p>
-${rows ? `<ul class="events">${rows}</ul>` : "<p>De bronfeed bevat geen afspraken.</p>"}
+<h3>First events</h3>
+<p>${target ? `Time zone ${escapeHtml(target)}.` : "Times and time zones match the source feed."} Shows up to 10 events in the order they appear in the source feed.</p>
+${rows ? `<ul class="events">${rows}</ul>` : "<p>The source feed contains no events.</p>"}
 </section>`;
 }
 
 function timeZoneOptions(selected) {
   const active = TIME_ZONES.includes(selected) ? selected : "";
-  const placeholder = `<option value="" disabled${active ? "" : " selected"}>Kies een tijdzone</option>`;
+  const placeholder = `<option value="" disabled${active ? "" : " selected"}>Select a time zone</option>`;
   return placeholder + TIME_ZONES.map(zone =>
     `<option value="${attribute(zone)}"${zone === active ? " selected" : ""}>${escapeHtml(zone)}</option>`).join("");
 }
 
 function page({ sourceUrl = "", target = "", force = false, result = "" } = {}) {
   return `<!doctype html>
-<html lang="nl"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer"><title>AgendaFix</title>
 <style>
 *{box-sizing:border-box}body{margin:0;background:#eef3f7;color:#173047;font:1rem/1.5 system-ui,sans-serif}
@@ -458,14 +458,14 @@ section h2{margin-top:0}
 .events li{padding:.8rem 0;border-top:1px solid #cbd7e0;overflow-wrap:anywhere}
 .times{display:flex;flex-wrap:wrap;gap:.25rem 1rem}
 p[role=alert]{padding:1rem;background:#fff4f1;color:#61231d;border-radius:.45rem}
-</style><main><h1>AgendaFix</h1><p>Maak een .ics-abonnementslink. Je kunt de tijdzone overschrijven met behoud van de kloktijden.</p>
+</style><main><h1>AgendaFix</h1><p>Create an .ics subscription link. You can override the time zone while keeping the local clock times.</p>
 <form action="/preview" method="get">
-<label>Bron-URL<input name="url" required value="${attribute(sourceUrl)}" placeholder="https://…/kalender.ics"></label>
+<label>Source URL<input name="url" required value="${attribute(sourceUrl)}" placeholder="https://…/calendar.ics"></label>
 <div class="force-zone">
 <label class="force-option"><input type="checkbox" name="force" value="1"${force ? " checked" : ""}>Force timezone</label>
-<label class="zone-select">Doeltijdzone<select name="timezone">${timeZoneOptions(target)}</select></label>
+<label class="zone-select">Target time zone<select name="timezone">${timeZoneOptions(target)}</select></label>
 </div>
-<button>Toon kalender en afspraken</button></form>
+<button>Show calendar and events</button></form>
 ${result}</main></html>`;
 }
 
@@ -478,11 +478,11 @@ button.addEventListener("click", async () => {
   status.textContent = "";
   try {
     await navigator.clipboard.writeText(field.value);
-    status.textContent = "Link gekopieerd.";
+    status.textContent = "Link copied.";
   } catch {
     field.focus();
     field.select();
-    status.textContent = "De link is geselecteerd. Kopieer hem met Ctrl+C of ⌘C.";
+    status.textContent = "The link is selected. Press Ctrl+C or ⌘C to copy it.";
   }
 });
 `;
@@ -513,16 +513,16 @@ export default {
     const failure = (message, status) => preview
       ? reply(page({ ...form, result: `<p role="alert">${escapeHtml(message)}</p>` }), status, html)
       : reply(message, status, plain);
-    if (request.method !== "GET") return reply("Gebruik GET.", 405, plain, { Allow: "GET" });
+    if (request.method !== "GET") return reply("Use GET.", 405, plain, { Allow: "GET" });
     if (path.pathname === "/copy-link.js") return reply(copyLinkScript, 200, "text/javascript; charset=utf-8");
     if (path.pathname === "/" && !path.search) return reply(page(), 200, html);
-    if (!["/", "/convert", "/preview", "/calendar.ics"].includes(path.pathname)) return reply("Route niet gevonden.", 404, plain);
+    if (!["/", "/convert", "/preview", "/calendar.ics"].includes(path.pathname)) return reply("Route not found.", 404, plain);
     try {
       const values = query.getAll("url");
-      if (values.length !== 1 || !values[0]) throw new RequestError(400, 'Geef parameter "url" één keer op.');
+      if (values.length !== 1 || !values[0]) throw new RequestError(400, 'Provide the "url" parameter exactly once.');
       const [sourceUrl] = values;
       const zones = force ? query.getAll(useForm ? "timezone" : zoneParameter) : [];
-      if (force && (zones.length !== 1 || !zones[0])) throw new RequestError(400, "Kies één doeltijdzone.");
+      if (force && (zones.length !== 1 || !zones[0])) throw new RequestError(400, "Select a target time zone.");
       const target = force ? timeZone(zones[0]) : "";
       const url = validateSource(sourceUrl, path.hostname);
       const input = await download(url, path.hostname);
@@ -539,9 +539,9 @@ export default {
     } catch (error) {
       if (error instanceof RequestError) return failure(error.message, error.status);
       if (error.name === "TimeoutError" || error.name === "AbortError") {
-        return failure("De kalenderbron reageerde niet op tijd.", 504);
+        return failure("The source calendar timed out.", 504);
       }
-      return failure("De kalenderbron kon niet worden verwerkt.", 502);
+      return failure("Could not process the source calendar.", 502);
     }
   }
 };
