@@ -22,6 +22,8 @@ commit=$(git -C "$project_root" rev-parse --verify HEAD 2>/dev/null || true)
     cat "$project_root/worker/index.js"
   fi
 } > "$dist_root/server/index.js"
-cp "$project_root/.openai/hosting.json" "$dist_root/.openai/hosting.json"
+if [[ -f "$project_root/.openai/hosting.json" ]]; then
+  cp "$project_root/.openai/hosting.json" "$dist_root/.openai/hosting.json"
+fi
 
 echo "Built $dist_root"
