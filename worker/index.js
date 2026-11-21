@@ -302,8 +302,8 @@ code{overflow-wrap:anywhere}
 </style><main><h1>FixiCal</h1><p>Zet de tijden van een iCalendar-feed om en open het resultaat als xCal (XML).</p>
 <form action="/convert" method="get">
 <label>Bron-URL<input name="url" required placeholder="https://…/kalender.ics"></label>
-<label>Brontijdzone<input name="from" required placeholder="Europe/Amsterdam"></label>
-<label>Doeltijdzone<input name="to" required placeholder="Europe/Amsterdam"></label>
+<label>Brontijdzone<input name="from" required value="Europe/Amsterdam"></label>
+<label>Doeltijdzone<input name="to" required value="Europe/Amsterdam"></label>
 <button>Open xCal</button></form>
 <p>API: <code>GET /convert?url=…&amp;from=…&amp;to=…</code></p>
 <p>Afspraken die de hele dag duren behouden hun datum. Reeksen met herhaalregels behouden hun oorspronkelijke tijdzone.</p>
