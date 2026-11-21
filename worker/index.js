@@ -502,12 +502,16 @@ ${optionTextInput("title-suffix", "Add after the title", values.get("title-suffi
 </div></div>`;
 }
 
+const eventStatuses = ["TENTATIVE", "CONFIRMED", "CANCELLED"];
+
 const extraOptions = [
   { toggle: "filter-events", label: "Filter events",
     fields: [["include-title", "Title contains"], ["exclude-title", "Title excludes"]] },
   { toggle: "hide-details", label: "Hide event details",
     fields: [["hide-description", "Descriptions"], ["hide-location", "Locations"],
-      ["hide-attendees", "Attendees and organizers"]], checkboxes: true },
+      ["hide-attendees", "Attendees and organizers"], ["hide-status", "Status"]], checkboxes: true },
+  { toggle: "force-event-status", label: "Force event status",
+    fields: [["force-status", "Target status"]], choices: eventStatuses },
   { toggle: "rename-calendar", label: "Rename calendar",
     fields: [["calendar-name", "Calendar name"]] }
 ];
@@ -525,10 +529,13 @@ function readExtras(query, useForm) {
       if (!values.length) continue;
       const [value] = values;
       const invalid = option.checkboxes ? value !== "1" : value.length > 160 || /[\r\n]/.test(value);
-      if (values.length !== 1 || invalid) {
+      if (values.length !== 1 || invalid || (value && option.choices && !option.choices.includes(value))) {
         throw new RequestError(400, `Invalid value for ${label}.`);
       }
       if (value.trim()) result.set(name, value.trim());
+    }
+    if (option.choices && !result.has(option.fields[0][0])) {
+      throw new RequestError(400, "Select a target status.");
     }
     if (option.toggle === "rename-calendar" && !result.has("calendar-name")) {
       throw new RequestError(400, "Enter a calendar name.");
@@ -542,6 +549,10 @@ function extraFieldsHtml(query, useForm) {
     const enabled = extraEnabled(query, useForm, option);
     const fields = option.fields.map(([name, label]) => {
       const value = enabled ? query.get(name) : "";
+      if (option.choices) {
+        const choices = option.choices.map(status => `<option value="${status}"${value === status ? " selected" : ""}>${status[0] + status.slice(1).toLowerCase()}</option>`).join("");
+        return `<label>${label}<select name="${name}"><option value="">Select a status</option>${choices}</select></label>`;
+      }
       if (!option.checkboxes) return optionTextInput(name, label, value || "");
       return `<label class="force-option"><input type="checkbox" name="${name}" value="1"${value === "1" ? " checked" : ""}>${label}</label>`;
     }).join("");
@@ -557,6 +568,8 @@ function applyExtras(calendars, extras) {
   const exclude = extras.get("exclude-title")?.toLowerCase();
   const calendarName = extras.get("calendar-name");
   const hidden = new Set();
+  if (extras.has("hide-status")) hidden.add("status");
+  const status = hidden.has("status") ? null : extras.get("force-status");
   if (extras.has("hide-description")) {
     hidden.add("description");
     hidden.add("x-alt-desc");
@@ -584,6 +597,13 @@ function applyExtras(calendars, extras) {
         const title = unescapeText(summary || "").toLowerCase();
         return (!include || title.includes(include)) && (!exclude || !title.includes(exclude));
       });
+    }
+    if (status) {
+      for (const event of calendar.children) {
+        if (event.name !== "vevent") continue;
+        event.properties = event.properties.filter(field => field.name !== "status");
+        event.properties.push({ name: "status", parameters: new Map(), value: status });
+      }
     }
     if (hidden.size) {
       for (const event of calendar.children) {
@@ -764,6 +784,7 @@ ${extraPanels["rename-calendar"]}
 ${extraPanels["filter-events"]}
 ${titleFieldsHtml(edits, editTitles)}
 ${extraPanels["hide-details"]}
+${extraPanels["force-event-status"]}
 <div class="option-panel force-zone">
 <label class="force-option"><input type="checkbox" name="force" value="1"${force ? " checked" : ""}>Force timezone</label>
 <label class="zone-select">Target time zone<select name="timezone">${timeZoneOptions(target)}</select></label>
