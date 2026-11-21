@@ -609,8 +609,43 @@ function previewTime(value) {
   return `${day}-${month}-${year}${clock ? " " + clock.slice(0, 5) : " · all day"}`;
 }
 
-function previewResults(calendars, target, calendarUrl, query, calendarName) {
-  const events = calendars.flatMap(calendar => calendar.children.filter(component => component.name === "vevent"));
+function calendarEvents(calendars) {
+  return calendars.flatMap(calendar => calendar.children.filter(component => component.name === "vevent"));
+}
+
+function eventCard(properties, label, target) {
+  const field = name => properties.find(property => property.name === name);
+  const title = escapeHtml(unescapeText(field("summary")?.value || "Untitled event"));
+  const start = field("dtstart");
+  const end = field("dtend")?.value;
+  // An all-day DTEND is the first day after the event.
+  const endLabel = end && end.includes("T") ? `<span>End ${previewTime(end)}</span>` : "";
+  const zone = start?.value.includes("T") ?
+    target || (start.value.endsWith("Z") ? "UTC" : start.parameters.get("tzid")?.[0] || "Floating local time") : "";
+  const details = [["Time zone", zone]];
+  for (const [name, detailLabel] of [["description", "Description"], ["location", "Location"],
+    ["organizer", "Organizer"], ["attendee", "Attendees"], ["status", "Status"],
+    ["duration", "Duration"], ["url", "Event URL"]]) {
+    const values = properties.filter(property => property.name === name && property.value).map(property => {
+      if (!["organizer", "attendee"].includes(name)) return unescapeText(property.value);
+      const address = property.value.replace(/^mailto:/i, "");
+      const commonName = property.parameters.get("cn")?.[0];
+      return commonName ? `${commonName} (${address})` : address;
+    });
+    if (values.length) details.push([detailLabel, values.join("\n")]);
+  }
+  const terms = details.filter(([, value]) => value).map(([term, value]) =>
+    `<dt>${term}</dt><dd>${escapeHtml(value)}</dd>`).join("");
+  return `<div class="event-card">
+<h4>${label}</h4>
+<strong>${title}</strong>
+<div class="times">${start ? `<span>Start ${previewTime(start.value)}</span>` : ""}${endLabel}</div>
+<details><summary>Details</summary>${terms ? `<dl>${terms}</dl>` : "<p>No additional details.</p>"}</details>
+</div>`;
+}
+
+function previewResults(originals, updated, target, calendarUrl, query, calendarName) {
+  const events = [...originals.keys()];
   const pageSize = 10;
   const pageCount = Math.max(1, Math.ceil(events.length / pageSize));
   const requestedPage = Number(query.get("page"));
@@ -620,16 +655,11 @@ function previewResults(calendars, target, calendarUrl, query, calendarName) {
   const startIndex = (currentPage - 1) * pageSize;
   const pageEvents = events.slice(startIndex, startIndex + pageSize);
   const pagination = pageCount > 1 ? previewPagination(query, currentPage, pageCount) : "";
-  const rows = pageEvents.map(event => {
-    const field = name => event.properties.find(property => property.name === name)?.value;
-    const title = escapeHtml(unescapeText(field("summary") || "Untitled event"));
-    const start = field("dtstart");
-    const end = field("dtend");
-    // An all-day DTEND is the first day after the event.
-    const endLabel = end && end.includes("T") ? `<span>End ${previewTime(end)}</span>` : "";
-    return `<li><strong>${title}</strong><div class="times">${start ? `<span>Start ${previewTime(start)}</span>` : ""}
-      ${endLabel}</div></li>`;
-  }).join("");
+  const rows = pageEvents.map(event => `<li class="event-comparison">
+${eventCard(originals.get(event), "Original", "")}
+${updated.has(event) ? eventCard(event.properties, "Updated", target)
+    : '<div class="event-card filtered"><h4>Updated</h4><p>Excluded by the event filter.</p></div>'}
+</li>`).join("");
   return `<section aria-labelledby="result">
 <h2 id="result">${escapeHtml(calendarName || "Calendar")}</h2>
 <label for="calendar-url">Google Calendar subscription URL (.ics)</label>
@@ -639,9 +669,10 @@ function previewResults(calendars, target, calendarUrl, query, calendarName) {
 </div>
 <p id="copy-status" role="status"></p>
 
-<h3 id="events">Events</h3>
+<h3 id="events">Compare events</h3>
 <p>${target ? `Time zone ${escapeHtml(target)}.` : "Times and time zones match the source feed."}
-${pageEvents.length ? `Showing ${startIndex + 1}–${startIndex + pageEvents.length} of ${events.length} events.` : ""}</p>
+${pageEvents.length ? `Showing ${startIndex + 1}–${startIndex + pageEvents.length} of ${events.length} source events.` : ""}
+${updated.size < events.length ? `${events.length - updated.size} excluded by the filter.` : ""}</p>
 ${pagination}
 ${rows ? `<ul class="events">${rows}</ul>` : "<p>The source feed contains no events.</p>"}
 </section>`;
@@ -710,7 +741,13 @@ section h2{margin-top:0}
 .pagination{display:flex;align-items:center;gap:.65rem;padding:0;margin:0 0 .75rem;border:0}
 .pagination select{width:auto;max-width:100%}
 .events{margin:0;padding:0;list-style:none}
-.events li{padding:.8rem 0;border-top:1px solid #cbd7e0;overflow-wrap:anywhere}
+.event-comparison{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.65rem;padding:.65rem 0;border-top:1px solid #cbd7e0}
+.event-card{min-width:0;border:1px solid #cbd7e0;border-radius:.5rem;padding:.75rem;overflow-wrap:anywhere}
+.event-card h4{margin:0 0 .3rem;font-size:.875rem}.event-card details{margin-top:.45rem}
+.event-card summary{cursor:pointer;color:#145361}.event-card dl{margin:.45rem 0 0}
+.event-card dt{font-weight:600;margin-top:.4rem}.event-card dd{margin:0;white-space:pre-wrap}
+.event-card p{margin:.4rem 0 0}.event-card.filtered{background:#eef3f7}
+@media(max-width:36rem){.event-comparison{grid-template-columns:1fr}}
 .times{display:flex;flex-wrap:wrap;gap:.25rem 1rem}
 p[role=alert]{padding:1rem;background:#fff4f1;color:#61231d;border-radius:.45rem}
 </style><main><h1>CalTune</h1><p>Create an .ics subscription link. You can override the time zone while keeping the local clock times.</p>
@@ -828,6 +865,8 @@ export default {
       const calendarType = "text/calendar; charset=utf-8";
       if (!preview && !target && !edits.size && !extras.size) return reply(input, 200, calendarType);
       const calendars = parseCalendar(new TextDecoder().decode(input));
+      const originals = preview ? new Map(calendarEvents(calendars).map(event =>
+        [event, event.properties.map(property => ({ ...property }))])) : null;
       if (extras.size) applyExtras(calendars, extras);
       if (edits.size) editEventTitles(calendars, edits);
       if (preview) {
@@ -836,7 +875,8 @@ export default {
         if (target) calendarUrl.searchParams.set("forcetimezone", target);
         for (const [name, value] of edits) calendarUrl.searchParams.append(name, value);
         for (const [name, value] of extras) calendarUrl.searchParams.set(name, value);
-        const result = previewResults(calendars, target, calendarUrl.href, query, extras.get("calendar-name"));
+        const updated = new Set(calendarEvents(calendars));
+        const result = previewResults(originals, updated, target, calendarUrl.href, query, extras.get("calendar-name"));
         return reply(page({ ...form, sourceUrl, target, edits, result }), 200, html);
       }
       return reply(toIcs(calendars, target), 200, calendarType);
