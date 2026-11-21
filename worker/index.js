@@ -482,7 +482,7 @@ function titleFieldsHtml(values, enabled) {
   }
   const rows = Array.from({ length: Math.min(MAX_TITLE_RULES, Math.max(1, finds.length, replacements.length)) },
     (_, index) => titleRuleRow(finds[index], replacements[index]));
-  return `<div class="title-edits">
+  return `<div class="option-panel title-edits">
 <input type="hidden" name="title-form" value="1">
 <label class="force-option"><input id="edit-titles" type="checkbox" name="edit-titles" value="1"${enabled ? " checked" : ""}>Edit event titles</label>
 <div class="title-options">
@@ -533,7 +533,6 @@ function previewResults(calendars, target, calendarUrl, query) {
 </div>
 <p id="copy-status" role="status"></p>
 
-<p><a href="${attribute(calendarUrl)}">Open .ics</a></p>
 <h3 id="events">Events</h3>
 <p>${target ? `Time zone ${escapeHtml(target)}.` : "Times and time zones match the source feed."}
 ${pageEvents.length ? `Showing ${startIndex + 1}–${startIndex + pageEvents.length} of ${events.length} events.` : ""}</p>
@@ -582,7 +581,7 @@ input,select{width:100%;border:1px solid #758a9a;color:inherit}
 .force-zone{display:grid;gap:.75rem}.force-zone .zone-select{display:none}
 .force-zone:has(input:checked) .zone-select{display:grid}
 select{appearance:none;padding-right:2.5rem;background:linear-gradient(45deg,transparent 50%,#173047 50%) right 1.2rem center/6px 6px no-repeat,linear-gradient(135deg,#173047 50%,transparent 50%) right .85rem center/6px 6px no-repeat,#fff}
-.title-edits{border:1px solid #cbd7e0;border-radius:.5rem;padding:.75rem}
+.option-panel{border:1px solid #cbd7e0;border-radius:.5rem;padding:.75rem}
 .title-options{display:none;margin-top:.75rem}
 .title-edits:has(#edit-titles:checked) .title-options{display:block}
 .title-edits p{margin:.65rem 0}
@@ -592,7 +591,6 @@ select{appearance:none;padding-right:2.5rem;background:linear-gradient(45deg,tra
 .secondary:disabled{opacity:.5;cursor:default}
 @media(max-width:36rem){.replacement-rule{grid-template-columns:1fr}.replacement-rule button{justify-self:start}}
 button{border:0;background:#145361;color:white;font-weight:700;cursor:pointer}
-a{color:#145361;text-decoration-thickness:.1em;text-underline-offset:.15em}
 section{margin-top:1.5rem;padding:1.5rem;background:white;border:1px solid #cbd7e0;border-radius:1rem}
 section h2{margin-top:0}
 .calendar-link{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.3rem}
@@ -607,7 +605,7 @@ p[role=alert]{padding:1rem;background:#fff4f1;color:#61231d;border-radius:.45rem
 </style><main><h1>CalTune</h1><p>Create an .ics subscription link. You can override the time zone while keeping the local clock times.</p>
 <form action="/preview" method="get">
 <label>Source URL<input name="url" required value="${attribute(sourceUrl)}" placeholder="https://…/calendar.ics"></label>
-<div class="force-zone">
+<div class="option-panel force-zone">
 <label class="force-option"><input type="checkbox" name="force" value="1"${force ? " checked" : ""}>Force timezone</label>
 <label class="zone-select">Target time zone<select name="timezone">${timeZoneOptions(target)}</select></label>
 </div>
