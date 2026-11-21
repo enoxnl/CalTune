@@ -706,7 +706,17 @@ function eventCard(properties, label, target) {
 </div>`;
 }
 
-function previewResults(originals, updated, target, calendarUrl, query, calendarName) {
+function calendarNames(calendars) {
+  return calendars.map(calendar => {
+    for (const name of ["name", "x-wr-calname"]) {
+      const value = calendar.properties.find(property => property.name === name && property.value.trim())?.value;
+      if (value) return unescapeText(value);
+    }
+    return "No calendar name";
+  });
+}
+
+function previewResults(originals, updated, target, calendarUrl, query, originalNames, updatedNames) {
   const events = [...originals.keys()];
   const pageSize = 10;
   const pageCount = Math.max(1, Math.ceil(events.length / pageSize));
@@ -722,8 +732,12 @@ ${eventCard(originals.get(event), "Original", "")}
 ${updated.has(event) ? eventCard(event.properties, "Updated", target)
     : '<div class="event-card filtered"><h4>Updated</h4><p>Excluded by the event filter.</p></div>'}
 </li>`).join("");
+  const names = originalNames.map((name, index) => `<dl class="calendar-comparison">
+<div class="event-card"><dt>Original calendar name</dt><dd>${escapeHtml(name)}</dd></div>
+<div class="event-card"><dt>Updated calendar name</dt><dd>${escapeHtml(updatedNames[index])}</dd></div>
+</dl>`).join("");
   return `<section aria-labelledby="result">
-<h2 id="result">${escapeHtml(calendarName || "Calendar")}</h2>
+<h2 id="result">Calendar</h2>
 <label for="calendar-url">Google Calendar subscription URL (.ics)</label>
 <div class="calendar-link">
 <input id="calendar-url" readonly spellcheck="false" value="${attribute(calendarUrl)}">
@@ -731,7 +745,8 @@ ${updated.has(event) ? eventCard(event.properties, "Updated", target)
 </div>
 <p id="copy-status" role="status"></p>
 
-<h3 id="events">Compare events</h3>
+<h3 id="events">Compare Calendar</h3>
+${names}
 <p>${target ? `Time zone ${escapeHtml(target)}.` : "Times and time zones match the source feed."}
 ${pageEvents.length ? `Showing ${startIndex + 1}–${startIndex + pageEvents.length} of ${events.length} source events.` : ""}
 ${updated.size < events.length ? `${events.length - updated.size} excluded by the filter.` : ""}</p>
@@ -810,7 +825,9 @@ section h2{margin-top:0}
 .pagination{display:flex;align-items:center;gap:.65rem;padding:0;margin:0 0 .75rem;border:0}
 .pagination select{width:auto;max-width:100%}
 .events{margin:0;padding:0;list-style:none}
-.event-comparison{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.65rem;padding:.65rem 0;border-top:1px solid #cbd7e0}
+.calendar-comparison,.event-comparison{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.65rem}
+.calendar-comparison dt{font-weight:600;font-size:.875rem}.calendar-comparison dd{margin:0}
+.event-comparison{padding:.65rem 0;border-top:1px solid #cbd7e0}
 .event-card{min-width:0;border:1px solid #cbd7e0;border-radius:.5rem;padding:.75rem;overflow-wrap:anywhere}
 .event-card h4{margin:0 0 .3rem;font-size:.875rem}.event-card details{margin-top:.45rem}
 .event-card summary{cursor:pointer;color:#145361}
@@ -819,7 +836,7 @@ section h2{margin-top:0}
 .event-detail-panel dt:first-child{margin-top:0}
 .event-card dt{font-weight:600;margin-top:.4rem}.event-card dd{margin:0;white-space:pre-wrap}
 .event-card p{margin:.4rem 0 0}.event-card.filtered{background:#eef3f7}
-@media(max-width:36rem){.event-comparison{grid-template-columns:1fr}}
+@media(max-width:36rem){.calendar-comparison,.event-comparison{grid-template-columns:1fr}}
 .times{display:flex;flex-wrap:wrap;gap:.25rem 1rem}
 footer{display:flex;flex-wrap:wrap;gap:.4rem 1rem;margin-top:1.5rem;padding:.8rem 0;border-top:1px solid #cbd7e0;font-size:.875rem}
 footer a{color:#145361}
@@ -959,6 +976,7 @@ export default {
       const calendarType = "text/calendar; charset=utf-8";
       if (!preview && !target && !edits.size && !descriptionEdits.size && !extras.size) return reply(input, 200, calendarType);
       const calendars = parseCalendar(new TextDecoder().decode(input));
+      const originalNames = preview ? calendarNames(calendars) : null;
       const originals = preview ? new Map(calendarEvents(calendars).map(event =>
         [event, event.properties.map(property => ({ ...property }))])) : null;
       if (extras.size) applyExtras(calendars, extras);
@@ -974,7 +992,7 @@ export default {
         for (const [name, value] of descriptionEdits) calendarUrl.searchParams.append(name, value);
         for (const [name, value] of extras) calendarUrl.searchParams.append(name, value);
         const updated = new Set(calendarEvents(calendars));
-        const result = previewResults(originals, updated, target, calendarUrl.href, query, extras.get("calendar-name"));
+        const result = previewResults(originals, updated, target, calendarUrl.href, query, originalNames, calendarNames(calendars));
         return reply(page({ ...form, sourceUrl, target, edits, descriptionEdits, result }), 200, html);
       }
       return reply(toIcs(calendars, target), 200, calendarType);
