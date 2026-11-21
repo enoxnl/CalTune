@@ -491,6 +491,13 @@ ${optionTextInput(`${key}-replace`, "Replace with", replacement)}
 </div>`;
 }
 
+function optionSettings(label, content) {
+  return `<details class="option-settings" open>
+<summary aria-label="${attribute(label)} settings">Settings</summary>
+${content}
+</details>`;
+}
+
 function textFieldsHtml(key, values, enabled) {
   const finds = values.getAll(`${key}-find`);
   const replacements = values.getAll(`${key}-replace`);
@@ -504,7 +511,7 @@ function textFieldsHtml(key, values, enabled) {
   return `<div class="option-panel text-edits">
 <input type="hidden" name="${key}-form" value="1">
 <label class="force-option"><input class="text-edit-toggle" type="checkbox" name="edit-${key}s" value="1"${enabled ? " checked" : ""}>Edit event ${key}s</label>
-<div class="text-options" data-rule-editor>
+${optionSettings(`Edit event ${key}s`, `<div class="text-options" data-rule-editor>
 <div class="edit-row">
 ${optionTextInput(`${key}-prefix`, `Add before the ${key}`, values.get(`${key}-prefix`) || "")}
 ${optionTextInput(`${key}-suffix`, `Add after the ${key}`, values.get(`${key}-suffix`) || "")}
@@ -513,7 +520,8 @@ ${optionTextInput(`${key}-suffix`, `Add after the ${key}`, values.get(`${key}-su
 <div data-rule-list>${rows.join("")}</div>
 <template data-rule-template>${textRuleRow(key)}</template>
 <button class="secondary" data-add-rule type="button">Add replacement rule</button>
-</div></div>`;
+</div>`)}
+</div>`;
 }
 
 const eventStatuses = ["TENTATIVE", "CONFIRMED", "CANCELLED"];
@@ -666,7 +674,7 @@ function extraFieldsHtml(query, useForm) {
     const hint = option.toggle === "filter-events" ? "Matches the original event title, regardless of capitalization." : "";
     return [option.toggle, `<div class="option-panel extra-option">
 <label class="force-option"><input class="extra-toggle" type="checkbox" name="${option.toggle}" value="1"${enabled ? " checked" : ""}>${option.label}</label>
-<div class="extra-fields">${hint ? `<p>${hint}</p>` : ""}${fields}</div>
+${optionSettings(option.label, `<div class="extra-fields">${hint ? `<p>${hint}</p>` : ""}${fields}</div>`)}
 </div>`];
   }));
 }
@@ -912,15 +920,14 @@ label{display:grid;gap:.3rem;font-weight:600}input,select,button{font:inherit;bo
 input,select{width:100%;border:1px solid #758a9a;color:inherit}
 .force-option{display:flex;align-items:center;gap:.5rem}
 .force-option input{width:1.1rem;height:1.1rem;margin:0;accent-color:#145361}
-.force-zone{display:grid;gap:.75rem}.force-zone .zone-select{display:none}
-.force-zone:has(input:checked) .zone-select{display:grid}
 select{appearance:none;padding-right:2.5rem;background:linear-gradient(45deg,transparent 50%,#173047 50%) right 1.2rem center/6px 6px no-repeat,linear-gradient(135deg,#173047 50%,transparent 50%) right .85rem center/6px 6px no-repeat,#fff}
 .option-panel{border:1px solid #cbd7e0;border-radius:.5rem;padding:.75rem}
-.extra-fields{display:none;margin-top:.75rem}
-.extra-option:has(.extra-toggle:checked) .extra-fields{display:grid;gap:.65rem}
+.option-settings{display:none;margin-top:.55rem}
+.option-panel:has(> .force-option > input:checked) > .option-settings{display:block}
+.option-settings summary{cursor:pointer;color:#145361;font-size:.875rem}
+.option-settings[open] summary{margin-bottom:.65rem}
+.extra-fields{display:grid;gap:.65rem}
 .extra-fields p{margin:0}
-.text-options{display:none;margin-top:.75rem}
-.text-edits:has(.text-edit-toggle:checked) .text-options{display:block}
 .text-edits p{margin:.65rem 0}
 .edit-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,12rem),1fr));gap:.75rem}
 .filter-rules{min-width:0;margin:0;padding:.65rem;border:1px solid #cbd7e0;border-radius:.4rem}
@@ -975,7 +982,7 @@ ${extraPanels["force-event-url"]}
 ${extraPanels["set-published-ttl"]}
 <div class="option-panel force-zone">
 <label class="force-option"><input type="checkbox" name="force" value="1"${force ? " checked" : ""}>Force timezone</label>
-<label class="zone-select">Target time zone<select name="timezone">${timeZoneOptions(target)}</select></label>
+${optionSettings("Force timezone", `<label class="zone-select">Target time zone<select name="timezone">${timeZoneOptions(target)}</select></label>`)}
 </div>
 <div class="option-panel">
 <label class="force-option"><input type="checkbox" name="keep-prodid" value="1"${keepProductId ? " checked" : ""}>Keep original product ID</label>
