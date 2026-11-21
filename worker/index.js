@@ -279,7 +279,7 @@ p[role=alert]{padding:1rem;background:#fff4f1;color:#61231d;border-radius:.45rem
 </style><main><h1>FixiCal</h1><p>Vervang de tijdzone van afspraken en behoud de kloktijden. Abonneer je op de aangepaste kalender via de .ics-link.</p>
 <form action="/preview" method="get">
 <label>Bron-URL<input name="url" required value="${attribute(sourceUrl)}" placeholder="https://…/kalender.ics"></label>
-<label>Doeltijdzone<input name="to" required value="${attribute(target)}"></label>
+<label>Doeltijdzone<input name="forcetimezone" required value="${attribute(target)}"></label>
 <button>Toon kalender en afspraken</button></form>
 ${result}</main></html>`;
 }
@@ -298,9 +298,11 @@ export default {
     const plain = "text/plain; charset=utf-8";
     const html = "text/html; charset=utf-8";
     const preview = path.pathname === "/preview";
+    const zoneParameter = path.searchParams.has("to") && !path.searchParams.has("forcetimezone")
+      ? "to" : "forcetimezone";
     const form = {
       sourceUrl: path.searchParams.get("url") || "",
-      target: path.searchParams.get("to") || "Europe/Amsterdam"
+      target: path.searchParams.get(zoneParameter) || "Europe/Amsterdam"
     };
     const failure = (message, status) => preview
       ? reply(page({ ...form, result: `<p role="alert">${escapeHtml(message)}</p>` }), status, html)
@@ -309,18 +311,18 @@ export default {
     if (path.pathname === "/" && !path.search) return reply(page(), 200, html);
     if (!["/", "/convert", "/preview", "/calendar.ics"].includes(path.pathname)) return reply("Route niet gevonden.", 404, plain);
     try {
-      const parameters = ["url", "to"].map(name => {
+      const parameters = ["url", zoneParameter].map(name => {
         const values = path.searchParams.getAll(name);
         if (values.length !== 1 || !values[0]) throw new RequestError(400, `Geef parameter "${name}" één keer op.`);
         return values[0];
       });
-      const [sourceUrl, to] = parameters;
-      const target = timeZone(to);
+      const [sourceUrl, requestedZone] = parameters;
+      const target = timeZone(requestedZone);
       const url = validateSource(sourceUrl, path.hostname);
       const calendars = parseCalendar(await download(url, path.hostname));
       if (preview) {
         const calendarUrl = new URL("/calendar.ics", path);
-        calendarUrl.search = new URLSearchParams({ url: sourceUrl, to: target });
+        calendarUrl.search = new URLSearchParams({ url: sourceUrl, forcetimezone: target });
         return reply(page({ sourceUrl, target, result: previewResults(calendars, target, calendarUrl.href) }), 200, html);
       }
       return reply(toIcs(calendars, target), 200, "text/calendar; charset=utf-8");
