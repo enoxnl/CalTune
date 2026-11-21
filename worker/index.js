@@ -492,7 +492,7 @@ ${optionTextInput(`${key}-replace`, "Replace with", replacement)}
 }
 
 function optionSettings(label, content) {
-  return `<details class="option-settings" open>
+  return `<details class="option-settings" name="calendar-option-settings">
 <summary aria-label="${attribute(label)} settings">Settings</summary>
 ${content}
 </details>`;
@@ -593,7 +593,7 @@ function durationFields(query, enabled) {
   const compound = parts.length > 1 ?
     `<input type="hidden" name="published-ttl" value="${attribute(existing)}">
 <p>Current interval: ${escapeHtml(humanDuration(existing))}. Enter a new amount to replace it.</p>` : "";
-  return `${compound}<div class="edit-row" data-duration-fields>
+  return `${compound}<div class="edit-row">
 <label>Amount<input type="number" name="published-ttl-amount" min="1" step="1" value="${attribute(amount)}"></label>
 <label>Unit<select name="published-ttl-unit">${choices}</select></label>
 </div>`;
@@ -921,11 +921,12 @@ input,select{width:100%;border:1px solid #758a9a;color:inherit}
 .force-option{display:flex;align-items:center;gap:.5rem}
 .force-option input{width:1.1rem;height:1.1rem;margin:0;accent-color:#145361}
 select{appearance:none;padding-right:2.5rem;background:linear-gradient(45deg,transparent 50%,#173047 50%) right 1.2rem center/6px 6px no-repeat,linear-gradient(135deg,#173047 50%,transparent 50%) right .85rem center/6px 6px no-repeat,#fff}
-.option-panel{border:1px solid #cbd7e0;border-radius:.5rem;padding:.75rem}
-.option-settings{display:none;margin-top:.55rem}
+.option-panel{position:relative;border:1px solid #cbd7e0;border-radius:.5rem;padding:.75rem}
+.option-settings{display:none}
+.option-settings[open]{margin-top:.65rem}
 .option-panel:has(> .force-option > input:checked) > .option-settings{display:block}
-.option-settings summary{cursor:pointer;color:#145361;font-size:.875rem}
-.option-settings[open] summary{margin-bottom:.65rem}
+.option-panel:has(> .option-settings) > .force-option{padding-right:5rem}
+.option-settings summary{position:absolute;top:.75rem;right:.75rem;line-height:1.5rem;cursor:pointer;color:#145361;font-size:.875rem}
 .extra-fields{display:grid;gap:.65rem}
 .extra-fields p{margin:0}
 .text-edits p{margin:.65rem 0}
@@ -1002,14 +1003,18 @@ for (const row of document.querySelectorAll(".event-comparison, .calendar-compar
   updated.addEventListener("toggle", () => { original.open = updated.open; });
 }
 
-const duration = document.querySelector("[data-duration-fields]");
-if (duration) {
-  const toggle = document.querySelector('input[name="set-published-ttl"]');
-  const syncDurationFields = () => {
-    for (const field of duration.querySelectorAll("input, select")) field.disabled = !toggle.checked;
+for (const settings of document.querySelectorAll(".option-settings")) {
+  const toggle = settings.parentElement.querySelector(".force-option input");
+  const controls = () => settings.querySelectorAll("input, select, textarea");
+  const syncControls = () => {
+    for (const field of controls()) field.disabled = !toggle.checked;
   };
-  toggle.addEventListener("change", syncDurationFields);
-  syncDurationFields();
+  toggle.addEventListener("change", () => {
+    settings.open = toggle.checked;
+    syncControls();
+  });
+  settings.addEventListener("invalid", () => { settings.open = true; }, true);
+  syncControls();
 }
 
 const pageSelect = document.getElementById("preview-page");
