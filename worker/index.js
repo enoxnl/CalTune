@@ -744,7 +744,7 @@ ${updated.has(event) ? eventCard(event.properties, "Updated", target)
 </dl>`).join("");
   return `<section aria-labelledby="result">
 <h2 id="result">Calendar</h2>
-<label for="calendar-url">Google Calendar subscription URL (.ics)</label>
+<label for="calendar-url">Calendar subscription URL (.ics)</label>
 <div class="calendar-link">
 <input id="calendar-url" readonly spellcheck="false" value="${attribute(calendarUrl)}">
 <button id="copy-calendar-url" type="button">Copy link</button>
