@@ -1,3 +1,4 @@
+const BUILD_COMMIT = "";
 const MAX_BYTES = 2 * 1024 * 1024;
 const appointmentFields = new Set(["dtstart", "dtend", "due", "recurrence-id", "rdate", "exdate", "trigger"]);
 const appointmentTypes = { trigger: "duration" };
@@ -749,8 +750,10 @@ section h2{margin-top:0}
 .event-card p{margin:.4rem 0 0}.event-card.filtered{background:#eef3f7}
 @media(max-width:36rem){.event-comparison{grid-template-columns:1fr}}
 .times{display:flex;flex-wrap:wrap;gap:.25rem 1rem}
+footer{display:flex;flex-wrap:wrap;gap:.4rem 1rem;margin-top:1.5rem;padding:.8rem 0;border-top:1px solid #cbd7e0;font-size:.875rem}
+footer a{color:#145361}
 p[role=alert]{padding:1rem;background:#fff4f1;color:#61231d;border-radius:.45rem}
-</style><main><h1>CalTune</h1><p>Create an .ics subscription link. You can override the time zone while keeping the local clock times.</p>
+</style><main><h1>CalTune</h1><p>Customize an existing calendar feed and get a new .ics subscription link. Rename the calendar, filter events, edit titles, hide details, or override the time zone. Preview your changes before subscribing.</p>
 <form action="/preview" method="get">
 <label>Source URL<input name="url" required value="${attribute(sourceUrl)}" placeholder="https://…/calendar.ics"></label>
 <input type="hidden" name="extras-form" value="1">
@@ -763,7 +766,10 @@ ${extraPanels["hide-details"]}
 <label class="zone-select">Target time zone<select name="timezone">${timeZoneOptions(target)}</select></label>
 </div>
 <button>Show calendar and events</button></form>
-${result}</main></html>`;
+${result}
+<footer><a href="https://enox.nl">enox.nl</a>
+${BUILD_COMMIT ? `<span>Git commit <code title="${BUILD_COMMIT}">${BUILD_COMMIT.slice(0, 7)}</code></span>` : ""}
+</footer></main></html>`;
 }
 
 const appScript = `
