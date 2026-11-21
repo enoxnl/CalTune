@@ -863,7 +863,7 @@ ${extraPanels["force-event-url"]}
 </div>
 <button>Show calendar and events</button></form>
 ${result}
-<footer><a href="https://enox.nl">enox.nl</a>
+<footer><span>© 2026 <a href="https://enox.nl">enox.nl</a></span>
 ${BUILD_COMMIT ? `<span>Git commit <code title="${BUILD_COMMIT}">${BUILD_COMMIT.slice(0, 7)}</code></span>` : ""}
 </footer></main></html>`;
 }
