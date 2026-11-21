@@ -525,6 +525,7 @@ ${optionTextInput(`${key}-suffix`, `Add after the ${key}`, values.get(`${key}-su
 }
 
 const eventStatuses = ["TENTATIVE", "CONFIRMED", "CANCELLED"];
+const availability = { OPAQUE: "Busy", TRANSPARENT: "Free" };
 
 const extraOptions = [
   { toggle: "filter-events", label: "Filter events",
@@ -535,6 +536,8 @@ const extraOptions = [
       ["hide-attendees", "Attendees and organizers"], ["hide-status", "Status"], ["hide-event-url", "Event URL"]], checkboxes: true },
   { toggle: "force-event-status", label: "Force event status",
     fields: [["force-status", "Target status"]], choices: eventStatuses },
+  { toggle: "set-availability", label: "Set availability",
+    fields: [["availability", "Availability"]], choices: Object.keys(availability), labels: availability },
   { toggle: "force-event-url", label: "Force event URL",
     fields: [["event-url", "Replacement event URL"]], url: true },
   { toggle: "set-published-ttl", label: "Set suggested refresh interval",
@@ -636,7 +639,7 @@ function readExtras(query, useForm) {
       result.set(name, url.href);
     }
     if (option.choices && !result.has(option.fields[0][0])) {
-      throw new RequestError(400, "Select a target status.");
+      throw new RequestError(400, `Select a value for ${option.fields[0][1].toLowerCase()}.`);
     }
     if (option.toggle === "rename-calendar" && !result.has("calendar-name")) {
       throw new RequestError(400, "Enter a calendar name.");
@@ -667,8 +670,8 @@ function extraFieldsHtml(query, useForm) {
       if (kind === "repeat") return filterRuleFields(name, label, enabled ? query.getAll(name) : []);
       const value = enabled ? query.get(name) : "";
       if (option.choices) {
-        const choices = option.choices.map(status => `<option value="${status}"${value === status ? " selected" : ""}>${status[0] + status.slice(1).toLowerCase()}</option>`).join("");
-        return `<label>${label}<select name="${name}"><option value="">Select a status</option>${choices}</select></label>`;
+        const choices = option.choices.map(status => `<option value="${status}"${value === status ? " selected" : ""}>${option.labels?.[status] || status[0] + status.slice(1).toLowerCase()}</option>`).join("");
+        return `<label>${label}<select name="${name}"><option value="">Select an option</option>${choices}</select></label>`;
       }
       if (kind === "days") {
         return `<label>${label}<input name="${name}" type="number" min="0" step="1" value="${attribute(value || "")}"></label>`;
@@ -680,7 +683,7 @@ function extraFieldsHtml(query, useForm) {
     const content = option.toggle === "filter-events"
       ? `<fieldset class="filter-rules">
 <legend>Date range</legend>
-<p>Use 0 for today. Leave a side blank for no limit. The range uses each event’s start date.</p>
+<p>Use 0 for today. Leave a side blank for no limit. The range uses event start dates, including recurring occurrences.</p>
 <div class="edit-row">${fields.slice(0, 2).join("")}</div>
 </fieldset>
 <p>Title rules match the original event title, regardless of capitalization.</p>
@@ -708,13 +711,16 @@ function calendarToday(calendar, now, target = "") {
   return Date.parse(`${parts.year.padStart(4, "0")}-${parts.month}-${parts.day}T00:00:00Z`) / MS_PER_DAY;
 }
 
-function eventStartDay(event) {
-  const value = event.properties.find(field => field.name === "dtstart")?.value;
+function dateValueDay(value) {
   const match = /^(\d{4})(\d{2})(\d{2})(?:$|T)/.exec(value || "");
   if (!match) return null;
   const [, year, month, day] = match;
   const date = Date.parse(`${year}-${month}-${day}T00:00:00Z`);
   return Number.isFinite(date) ? date / MS_PER_DAY : null;
+}
+
+function eventStartDay(event) {
+  return dateValueDay(event.properties.find(field => field.name === "dtstart")?.value);
 }
 
 function eventRange(extras) {
@@ -734,6 +740,141 @@ function relativeDay(day) {
   return day < 0 ? `${dayCount(-day)} ago` : `In ${dayCount(day)}`;
 }
 
+function applyDateRange(calendar, range, target, now) {
+  const today = calendarToday(calendar, now, target);
+  const lower = range.back === null ? -Infinity : today - range.back;
+  const upper = range.ahead === null ? Infinity : today + range.ahead;
+  const fits = day => day !== null && day >= lower && day <= upper;
+  const lowerOnly = upper === Infinity;
+  const events = calendar.children.filter(event => event.name === "vevent");
+  const get = (event, name) => event.properties?.find(field => field.name === name);
+  const masters = events.filter(event => !get(event, "recurrence-id") && (get(event, "rrule") || get(event, "rdate")));
+  if (!masters.length) {
+    calendar.children = calendar.children.filter(event => event.name !== "vevent" || fits(eventStartDay(event)));
+    return;
+  }
+
+  const parsed = new ICAL.Component(ICAL.parse(toIcs([calendar], ""))).getAllSubcomponents("vevent");
+  const components = new Map(events.map((event, index) => [event, parsed[index]]));
+  const overrides = new Map();
+  for (const event of events) {
+    const uid = get(event, "uid")?.value;
+    if (!uid || !get(event, "recurrence-id")) continue;
+    if (!overrides.has(uid)) overrides.set(uid, []);
+    overrides.get(uid).push(event);
+  }
+  const handled = new Set();
+  const retained = new Set();
+  let remaining = 20000;
+
+  for (const master of masters) {
+    handled.add(master);
+    const component = components.get(master);
+    const anchor = component.getFirstPropertyValue("dtstart");
+    if (!anchor) continue;
+    const anchorField = get(master, "dtstart");
+    const normalized = time => {
+      if (time.isDate || time.zone === ICAL.Timezone.localTimezone || anchor.zone === ICAL.Timezone.localTimezone) {
+        return time.toICALString();
+      }
+      return time.convertToZone(anchor.zone).toICALString();
+    };
+    const anchorKey = normalized(anchor);
+    const overrideByDate = new Map();
+    for (const exception of overrides.get(get(master, "uid")?.value) || []) {
+      handled.add(exception);
+      const id = get(exception, "recurrence-id");
+      if (id.parameters.get("range")?.[0]?.toUpperCase() === "THISANDFUTURE") {
+        throw new RequestError(422, "Date filtering does not support recurring exceptions that change all future events.");
+      }
+      const date = components.get(exception).getFirstPropertyValue("recurrence-id");
+      if (date) overrideByDate.set(normalized(date), exception);
+    }
+
+    const excluded = new Set();
+    for (const property of component.getAllProperties("exdate")) {
+      for (const time of property.getValues()) excluded.add(normalized(time));
+    }
+    const periods = new Map();
+    for (const property of component.getAllProperties("rdate")) {
+      if (property.type !== "period") continue;
+      for (const period of property.getValues()) periods.set(normalized(period.start), period.toICALString());
+      component.removeProperty(property);
+    }
+
+    const kept = new Map();
+    const removed = new Set();
+    const seen = new Set();
+    const dateParameters = new Map(anchorField.parameters);
+    dateParameters.delete("range");
+    const hasOpenRule = component.getAllProperties("rrule").some(field => {
+      const rule = field.getFirstValue();
+      return !rule.count && !rule.until;
+    });
+    let first = null;
+    let last = null;
+    const visit = (key, day, value = key) => {
+      if (seen.has(key)) return;
+      seen.add(key);
+      const exception = overrideByDate.get(key);
+      const actual = exception ? eventStartDay(exception) ?? day : day;
+      const cancelled = (exception ? get(exception, "status")?.value : "")?.toUpperCase() === "CANCELLED";
+      if (fits(actual) && !cancelled && (!excluded.has(key) || exception)) {
+        kept.set(key, periods.get(key) || value);
+        if (exception) retained.add(exception);
+        const start = (exception && get(exception, "dtstart")?.value) || value;
+        if (first === null || actual < first.day || (actual === first.day && start < first.value)) {
+          first = { day: actual, value: start };
+        }
+        last = last === null ? actual : Math.max(last, actual);
+      } else if (lowerOnly && !excluded.has(key)) {
+        removed.add(key);
+      }
+    };
+
+    const dayOfKey = key => dateValueDay(key);
+    visit(anchorKey, dayOfKey(anchorKey));
+    for (const [key] of periods) visit(key, dayOfKey(key));
+    const iterator = new ICAL.Event(component, { exceptions: [] }).iterator();
+    for (let occurrence = iterator.next(); occurrence; occurrence = iterator.next()) {
+      if (--remaining < 0) throw new RequestError(422, "This calendar has too many recurring instances to filter.");
+      const key = normalized(occurrence);
+      const day = dayOfKey(key);
+      if (day > upper) break;
+      visit(key, day);
+      if (lowerOnly && hasOpenRule && day >= lower && first !== null) break;
+    }
+    for (const [key] of overrideByDate) {
+      if (!seen.has(key)) visit(key, dayOfKey(key));
+    }
+
+    if (!first) continue;
+    retained.add(master);
+    master.rangeFirst = first;
+    master.rangeLast = lowerOnly && hasOpenRule ? null : last;
+    if (lowerOnly) {
+      for (const key of removed) master.properties.push({ name: "exdate", parameters: new Map(dateParameters), value: key });
+      continue;
+    }
+
+    master.properties = master.properties.filter(field => !["rrule", "rdate", "exdate"].includes(field.name));
+    if (!kept.has(anchorKey)) {
+      master.properties.push({ name: "exdate", parameters: new Map(dateParameters), value: anchorKey });
+    }
+    const dates = [...kept].filter(([key, value]) => key !== anchorKey && !value.includes("/")).map(([key]) => key);
+    const keptPeriods = [...kept.values()].filter(value => value.includes("/"));
+    if (dates.length) master.properties.push({ name: "rdate", parameters: new Map(dateParameters), value: dates.join(",") });
+    if (keptPeriods.length) {
+      const parameters = new Map(dateParameters);
+      parameters.set("value", ["PERIOD"]);
+      master.properties.push({ name: "rdate", parameters, value: keptPeriods.join(",") });
+    }
+  }
+
+  calendar.children = calendar.children.filter(event => event.name !== "vevent" ||
+    (handled.has(event) ? retained.has(event) : fits(eventStartDay(event))));
+}
+
 function applyExtras(calendars, extras, target, range, now) {
   const include = extras.getAll("include-title").map(value => value.toLowerCase());
   const exclude = extras.getAll("exclude-title").map(value => value.toLowerCase());
@@ -742,7 +883,7 @@ function applyExtras(calendars, extras, target, range, now) {
   const hidden = new Set();
   if (extras.has("hide-status")) hidden.add("status");
   if (extras.has("hide-event-url")) hidden.add("url");
-  const replacements = [["status", extras.get("force-status")], ["url", extras.get("event-url")]]
+  const replacements = [["status", extras.get("force-status")], ["url", extras.get("event-url")], ["transp", extras.get("availability")]]
     .filter(([name, value]) => value && !hidden.has(name));
   if (extras.has("hide-description")) {
     hidden.add("description");
@@ -773,13 +914,12 @@ function applyExtras(calendars, extras, target, range, now) {
       });
     }
     if (range.back !== null || range.ahead !== null) {
-      const today = calendarToday(calendar, now, target);
-      calendar.children = calendar.children.filter(event => {
-        if (event.name !== "vevent") return true;
-        const start = eventStartDay(event);
-        return start !== null && (range.back === null || today - start <= range.back) &&
-          (range.ahead === null || start - today <= range.ahead);
-      });
+      try {
+        applyDateRange(calendar, range, target, now);
+      } catch (error) {
+        if (error instanceof RequestError) throw error;
+        throw new RequestError(422, "Could not filter the recurrence rules in this calendar.");
+      }
     }
     if (hidden.size || replacements.length) {
       for (const event of calendar.children) {
@@ -828,20 +968,22 @@ function calendarEvents(calendars) {
   return calendars.flatMap(calendar => calendar.children.filter(component => component.name === "vevent"));
 }
 
-function eventCard(properties, label, target) {
+function eventCard(properties, label, target, rangeFirst) {
   const field = name => properties.find(property => property.name === name);
   const title = escapeHtml(unescapeText(field("summary")?.value || "Untitled event"));
   const start = field("dtstart");
   const end = field("dtend")?.value;
   // An all-day DTEND is the first day after the event.
-  const endLabel = end && end.includes("T") ? `<span>End ${previewTime(end)}</span>` : "";
+  const startsLater = rangeFirst && start?.value !== rangeFirst.value;
+  const endLabel = !startsLater && end && end.includes("T") ? `<span>End ${previewTime(end)}</span>` : "";
   const zone = start?.value.includes("T") ?
     target || (start.value.endsWith("Z") ? "UTC" : start.parameters.get("tzid")?.[0] || "Floating local time") : "";
   const details = [["Time zone", zone]];
   for (const [name, detailLabel] of [["description", "Description"], ["location", "Location"],
-    ["organizer", "Organizer"], ["attendee", "Attendees"], ["status", "Status"],
+    ["organizer", "Organizer"], ["attendee", "Attendees"], ["status", "Status"], ["transp", "Availability"],
     ["duration", "Duration"], ["url", "Event URL"]]) {
     const values = properties.filter(property => property.name === name && property.value).map(property => {
+      if (name === "transp") return availability[property.value] || property.value;
       if (!["organizer", "attendee"].includes(name)) return unescapeText(property.value);
       const address = property.value.replace(/^mailto:/i, "");
       const commonName = property.parameters.get("cn")?.[0];
@@ -854,7 +996,7 @@ function eventCard(properties, label, target) {
   return `<div class="event-card">
 <h4>${label}</h4>
 <strong>${title}</strong>
-<div class="times">${start ? `<span>Start ${previewTime(start.value)}</span>` : ""}${endLabel}</div>
+<div class="times">${start ? `<span>${startsLater ? "First in range" : "Start"} ${previewTime(rangeFirst?.value || start.value)}</span>` : ""}${endLabel}</div>
 <details><summary>Details</summary><div class="event-detail-panel">${terms ? `<dl>${terms}</dl>` : "<p>No additional details.</p>"}</div></details>
 </div>`;
 }
@@ -872,17 +1014,21 @@ function calendarOverview(calendars, now) {
     const today = calendarToday(calendar, now);
     let oldest = null;
     let newest = null;
+    let openEnded = false;
     for (const event of events) {
-      const day = eventStartDay(event);
+      const day = event.rangeFirst?.day ?? eventStartDay(event);
       if (day === null) continue;
       const days = day - today;
+      const end = (event.rangeLast ?? day) - today;
+      openEnded ||= event.rangeLast === null;
       oldest = oldest === null ? days : Math.min(oldest, days);
-      newest = newest === null ? days : Math.max(newest, days);
+      newest = newest === null ? end : Math.max(newest, end);
     }
     return {
       name: value("name", "x-wr-calname") || "No calendar name",
       oldest,
       newest,
+      openEnded,
       details: [
         ["Events", events.length],
         ["Suggested refresh interval", humanDuration(value("x-published-ttl")) || "Not set"],
@@ -899,17 +1045,41 @@ function calendarOverview(calendars, now) {
   });
 }
 
-function calendarCard(label, { name, details, oldest, newest }, rangeLabel = "") {
+function calendarCard(label, { name, details, oldest, newest, openEnded }, rangeLabel = "") {
   const terms = details.map(([term, value]) => `<dt>${term}</dt><dd>${escapeHtml(value)}</dd>`).join("");
   return `<div class="event-card"><dt>${label}</dt><dd>${escapeHtml(name)}${rangeLabel ? ` <span class="range-label">(${escapeHtml(rangeLabel)})</span>` : ""}
-<p class="calendar-event-range"><strong>Oldest event:</strong> ${relativeDay(oldest)}<br><strong>Latest event:</strong> ${relativeDay(newest)}</p>
+<p class="calendar-event-range"><strong>Oldest event:</strong> ${relativeDay(oldest)}<br><strong>Latest event:</strong> ${openEnded ? "Open-ended recurrence" : relativeDay(newest)}</p>
 <details><summary>Details</summary><div class="event-detail-panel"><dl>${terms}</dl></div></details>
 </dd></div>`;
 }
 
+function eventChanged(event, original, updated, target) {
+  if (!updated.has(event)) return true;
+  const zoneChanged = target && original.properties.some(field => appointmentFields.has(field.name) &&
+    field.value.includes("T") && (field.value.endsWith("Z") ? "UTC" : field.parameters.get("tzid")?.[0]) !== target);
+  return zoneChanged || original.signature !== eventSignature(event);
+}
+
+function eventSignature(component) {
+  const properties = component.properties.map(({ name, parameters, value }) =>
+    JSON.stringify([name, [...parameters].sort(([left], [right]) => left.localeCompare(right)), value])).sort();
+  return JSON.stringify([properties, component.children.map(eventSignature)]);
+}
+
+function eventSnapshot(event) {
+  return {
+    properties: event.properties.map(property => ({ ...property })),
+    signature: eventSignature(event)
+  };
+}
+
 function previewResults(originals, updated, target, calendarUrl, query, originalCalendars, updatedCalendars, range) {
   // Sort by the local start shown on the comparison cards.
-  const events = [...originals].map(([event, properties]) => ({
+  const onlyChanged = query.get("only-changed") === "1";
+  const onlyIncluded = query.get("only-included") === "1";
+  const events = [...originals].filter(([event, original]) => (!onlyIncluded || updated.has(event)) &&
+    (!onlyChanged || eventChanged(event, original, updated, target)))
+    .map(([event, { properties }]) => ({
     event,
     start: properties.find(property => property.name === "dtstart")?.value.replace(/Z$/, "") || ""
   })).sort((left, right) => {
@@ -924,16 +1094,15 @@ function previewResults(originals, updated, target, calendarUrl, query, original
     : 1;
   const startIndex = (currentPage - 1) * pageSize;
   const pageEvents = events.slice(startIndex, startIndex + pageSize);
-  const excluded = events.length - updated.size;
+  const excluded = events.filter(event => !updated.has(event)).length;
   const summary = pageEvents.length
-    ? `Showing ${startIndex + 1}–${startIndex + pageEvents.length} of ${events.length} source events.`
+    ? `Showing ${startIndex + 1}–${startIndex + pageEvents.length} of ${events.length} ${onlyChanged ? "changed" : onlyIncluded ? "included" : "source"} events.`
     : "";
   const eventCount = summary + (excluded ? ` ${excluded} excluded by the filter.` : "");
-  const pagination = pageCount > 1 ? previewPagination(query, currentPage, pageCount, eventCount)
-    : eventCount ? `<p>${eventCount}</p>` : "";
+  const pagination = previewPagination(query, currentPage, pageCount, eventCount, onlyChanged, onlyIncluded);
   const rows = pageEvents.map(event => `<li class="event-comparison">
-${eventCard(originals.get(event), "Original", "")}
-${updated.has(event) ? eventCard(event.properties, "Updated", target)
+${eventCard(originals.get(event).properties, "Original", "")}
+${updated.has(event) ? eventCard(event.properties, "Updated", target, event.rangeFirst)
     : '<div class="event-card filtered"><h4>Updated</h4><p>Excluded by the event filter.</p></div>'}
 </li>`).join("");
   const sourceView = new URL(calendarUrl);
@@ -964,7 +1133,7 @@ ${calendarCard("Updated calendar name", updatedCalendars[index], rangeLabel)}
 <h3 id="events">Compare Calendar</h3>
 ${names}
 ${pagination}
-${rows ? `<ul class="events">${rows}</ul>` : "<p>The source feed contains no events.</p>"}
+${rows ? `<ul class="events">${rows}</ul>` : onlyChanged || onlyIncluded ? "<p>No events match this preview.</p>" : "<p>The source feed contains no events.</p>"}
 </section>`;
 }
 
@@ -974,7 +1143,7 @@ const previewFields = ["url", "force", "timezone", "forcetimezone", "to", "title
     "published-ttl-amount", "published-ttl-unit",
     ...extraOptions.flatMap(option => [option.toggle, ...option.fields.map(([name]) => name)])];
 
-function previewPagination(query, currentPage, pageCount, eventCount) {
+function previewPagination(query, currentPage, pageCount, eventCount, onlyChanged, onlyIncluded) {
   const fields = [...query].filter(([name]) => previewFields.includes(name)).map(([name, value]) =>
     `<input type="hidden" name="${attribute(name)}" value="${attribute(value)}">`).join("");
   const options = Array.from({ length: pageCount }, (_, index) => {
@@ -983,10 +1152,14 @@ function previewPagination(query, currentPage, pageCount, eventCount) {
   }).join("");
   return `<form class="pagination" action="/preview#events" method="get">
 ${fields}
-<label for="preview-page">Page</label>
-<select id="preview-page" name="page">${options}</select>
-<noscript><button type="submit">Show page</button></noscript>
+${pageCount > 1 ? `<label for="preview-page">Page</label>
+<select id="preview-page" name="page">${options}</select>` : ""}
 <span class="event-count">${eventCount}</span>
+<div class="preview-toggles">
+<label class="force-option"><input id="only-changed" type="checkbox" name="only-changed" value="1"${onlyChanged ? " checked" : ""}>Show only changed events</label>
+<label class="force-option"><input id="only-included" type="checkbox" name="only-included" value="1"${onlyIncluded ? " checked" : ""}>Show only included events</label>
+</div>
+<noscript><button type="submit">Apply preview filters</button></noscript>
 </form>`;
 }
 
@@ -1052,6 +1225,7 @@ section h2{margin-top:0}
 .pagination{display:flex;flex-wrap:wrap;align-items:center;gap:.65rem;padding:0;margin:0 0 .75rem;border:0}
 .pagination select{width:auto;max-width:100%}
 .event-count{flex:1 1 12rem}
+.preview-toggles{display:flex;flex:1 0 100%;flex-wrap:wrap;gap:.35rem 1rem}
 .events{margin:0;padding:0;list-style:none}
 .calendar-comparison,.event-comparison{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.65rem}
 .calendar-comparison dt{font-weight:600;font-size:.875rem}.calendar-comparison dd{margin:0}
@@ -1083,6 +1257,7 @@ ${textFieldsHtml("title", edits, editTitles)}
 ${textFieldsHtml("description", descriptionEdits, editDescriptions)}
 ${extraPanels["hide-details"]}
 ${extraPanels["force-event-status"]}
+${extraPanels["set-availability"]}
 ${extraPanels["force-event-url"]}
 ${extraPanels["set-published-ttl"]}
 <div class="option-panel force-zone">
@@ -1167,6 +1342,12 @@ for (const settings of document.querySelectorAll(".option-settings")) {
 
 const pageSelect = document.getElementById("preview-page");
 pageSelect?.addEventListener("change", () => pageSelect.form.requestSubmit());
+for (const filter of document.querySelectorAll("#only-changed, #only-included")) {
+  filter.addEventListener("change", () => {
+    if (pageSelect) pageSelect.value = "1";
+    filter.form.requestSubmit();
+  });
+}
 
 for (const editor of document.querySelectorAll("[data-rule-editor]")) {
   const rules = editor.querySelector("[data-rule-list]");
@@ -1275,7 +1456,7 @@ export default {
       const range = eventRange(extras);
       const originalCalendars = preview ? calendarOverview(calendars, now) : null;
       const originals = preview ? new Map(calendarEvents(calendars).map(event =>
-        [event, event.properties.map(property => ({ ...property }))])) : null;
+        [event, eventSnapshot(event)])) : null;
       applyExtras(calendars, extras, target, range, now);
       if (edits.size) editEventText(calendars, edits, "title", "summary");
       if (descriptionEdits.size && !extras.has("hide-description")) {

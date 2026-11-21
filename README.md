@@ -25,4 +25,8 @@ Beschrijvingstekst bewerk je met `description-find` en `description-replace`, `d
 
 Gebruik `published-ttl` met een positieve iCalendar-duur, zoals `PT30M`, om `X-PUBLISHED-TTL` van de kalender te wijzigen. Agenda-apps bepalen zelf wanneer ze de feed opnieuw ophalen.
 
-Onder **Filter events** bepaal je ook het datumbereik. Gebruik `days-back` en/of `days-ahead` voor een relatief datumbereik op basis van de lokale begindatum. De grenzen zijn inclusief en `0` betekent vandaag. Herhaalregels worden beoordeeld op de begindatum van hun afspraakrecord. De preview toont voor oud en nieuw hoe ver de vroegste en laatste begindatum van vandaag liggen.
+Onder **Filter events** bepaal je ook het datumbereik. Gebruik `days-back` en/of `days-ahead` voor een relatief datumbereik op basis van de lokale begindatum. De grenzen zijn inclusief en `0` betekent vandaag. Bij herhaalreeksen worden afzonderlijke begindatums bekeken. Met een eindgrens worden de overgebleven herhalingen als RDATE-datums vastgelegd. Zonder eindgrens blijft de herhaalregel actief en worden eerdere datums uitgesloten. Een datumfilter ondersteunt geen uitzonderingen met `RANGE=THISANDFUTURE`. De preview toont voor oud en nieuw hoe ver de vroegste en laatste begindatum van vandaag liggen.
+
+Gebruik `availability=OPAQUE` voor Busy of `availability=TRANSPARENT` voor Free. De vinkjes voor alleen gewijzigde of behouden afspraken gelden alleen voor de preview.
+
+Herhaalregels worden verwerkt met de vendored [ical.js 2.2.1](https://github.com/kewisch/ical.js/tree/v2.2.1), onder de Mozilla Public License 2.0.
