@@ -829,7 +829,14 @@ function calendarCard(label, { name, details }) {
 }
 
 function previewResults(originals, updated, target, calendarUrl, query, originalCalendars, updatedCalendars) {
-  const events = [...originals.keys()];
+  // Sort by the local start shown on the comparison cards.
+  const events = [...originals].map(([event, properties]) => ({
+    event,
+    start: properties.find(property => property.name === "dtstart")?.value.replace(/Z$/, "") || ""
+  })).sort((left, right) => {
+    if (!left.start || !right.start) return Number(!left.start) - Number(!right.start);
+    return left.start.localeCompare(right.start);
+  }).map(({ event }) => event);
   const pageSize = 10;
   const pageCount = Math.max(1, Math.ceil(events.length / pageSize));
   const requestedPage = Number(query.get("page"));
