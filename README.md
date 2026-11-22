@@ -1,45 +1,45 @@
 # CalTune
 
-[CalTune](https://caltune.enox.nl) maakt van een openbare iCalendar-feed een aangepaste `.ics`-abonnementslink. De app draait als stateless Cloudflare Worker, haalt de bron bij elke aanvraag op en bewaart geen kalendergegevens.
+[CalTune](https://caltune.enox.nl) turns a public iCalendar feed into a customized `.ics` subscription link. It runs as a stateless Cloudflare Worker, fetches the source on every request, and stores no calendar data.
 
-## Een kalender aanpassen
+## Customize a calendar
 
-1. Plak een openbare HTTPS- of webcal-link in **Source URL**, of laad een eerder gemaakte CalTune-link via **Import settings from existing URL**.
-2. Vink aan welke wijzigingen je wilt toepassen. Via **Settings** kun je de opties per onderdeel in- en uitklappen.
-3. Klik **Show calendar and events**. De preview vergelijkt de oorspronkelijke en aangepaste kalender en toont tien afspraken per pagina, gesorteerd op lokale begindatum en -tijd. Open **Details** om de velden te vergelijken.
-4. Gebruik **Copy link** om de abonnementslink aan je agenda-app toe te voegen. Met **View source ICS** en **View output ICS** kun je de ruwe bestanden bekijken.
+1. Paste a public HTTPS or webcal link into **Source URL**, or load an existing CalTune link using **Import settings from existing URL**.
+2. Select the changes you want to apply. Use **Settings** to expand or collapse each option's settings.
+3. Click **Show calendar and events**. The preview compares the original and updated calendars and shows ten events per page, sorted by local start date and time. Open **Details** to compare individual fields.
+4. Use **Copy link** to add the subscription link to your calendar app. Use **View source ICS** and **View output ICS** to inspect the raw files.
 
-**Show only changed events** en **Show only included events** filteren de preview. De abonnementsfeed wordt bepaald door de gekozen kalenderbewerkingen.
+**Show only changed events** and **Show only included events** filter the preview. The selected calendar changes determine the subscription feed.
 
 ## API
 
-Alle instellingen zitten in de GET-parameters. URL-encodeer de volledige bron-URL als één waarde, ook als die zelf een querystring bevat.
+All settings are passed as GET query parameters. URL-encode the entire source URL as a single value, including any query string it contains.
 
 ```text
 GET /calendar.ics?url=https%3A%2F%2Fexample.org%2Fcalendar.ics&forcetimezone=Europe%2FAmsterdam
 ```
 
-| Parameter | Werking |
+| Parameter | Behavior |
 | --- | --- |
-| `url` | Openbare bronfeed. Verplicht. |
-| `calendar-name` | Stelt de kalendernaam in. |
-| `include-title`, `exclude-title` | Herhaalbare filters op letterlijke tekst in de oorspronkelijke titel, hoofdletterongevoelig. Als er inclusieregels zijn, moet er minstens één matchen. Elke matchende uitsluitregel verwijdert de afspraak. Herhaalreeksen worden beoordeeld op de titel van de reeks. |
-| `days-back`, `days-ahead` | Relatief datumbereik op basis van de lokale begindatum. Grenzen zijn inclusief. `0` betekent vandaag en een weggelaten zijde is onbegrensd. |
-| `keep-series=1` | Houdt herhaalreeksen en hun uitzonderingen buiten de titel- en datumfilters. Andere kalenderbewerkingen blijven op die afspraken van toepassing. |
-| `title-find`, `title-replace`, `title-prefix`, `title-suffix` | Bewerkt afspraaktitels. |
-| `description-find`, `description-replace`, `description-prefix`, `description-suffix` | Bewerkt afspraakbeschrijvingen. |
-| `hide-description=1`, `hide-location=1`, `hide-attendees=1`, `hide-status=1`, `hide-event-url=1` | Laat de geselecteerde afspraakdetails weg. Bij deelnemers worden ook organisatoren weggelaten. Verbergen krijgt voorrang op bewerken of overschrijven. |
-| `force-status` | Stelt de status in op `TENTATIVE`, `CONFIRMED` of `CANCELLED`. |
-| `availability` | Stelt de beschikbaarheid in op `OPAQUE` (Busy) of `TRANSPARENT` (Free). |
-| `event-url` | Stelt dezelfde HTTP- of HTTPS-link in voor elke afspraak. |
-| `published-ttl` | Stelt `X-PUBLISHED-TTL` in met een positieve iCalendar-duur, zoals `PT30M`. De agenda-app bepaalt wanneer ze de feed opnieuw ophaalt. |
-| `forcetimezone` | Stelt een IANA-tijdzone in met behoud van de lokale kloktijd. Heledagafspraken houden hun datum. De uitvoer krijgt dezelfde doelzone in `X-WR-TIMEZONE`. |
-| `view=source`, `view=raw` | Geeft respectievelijk het ongewijzigde bronbestand en de aangepaste ICS als platte tekst terug. Zonder `view` geeft CalTune `text/calendar` terug. |
+| `url` | Public source feed URL. Required. |
+| `calendar-name` | Sets the calendar name. |
+| `include-title`, `exclude-title` | Repeatable, case-insensitive literal text filters on the original event title. When inclusion rules are present, at least one must match. Any matching exclusion rule removes the event. Recurring series are evaluated using the series title. |
+| `days-back`, `days-ahead` | Set a relative date range based on the local start date. Both bounds are inclusive. `0` means today. Omitting either bound leaves that side unrestricted. |
+| `keep-series=1` | Exempts recurring series and their exceptions from title and date filters. Other calendar changes still apply to those events. |
+| `title-find`, `title-replace`, `title-prefix`, `title-suffix` | Edit event titles. |
+| `description-find`, `description-replace`, `description-prefix`, `description-suffix` | Edit event descriptions. |
+| `hide-description=1`, `hide-location=1`, `hide-attendees=1`, `hide-status=1`, `hide-event-url=1` | Omit selected event details. Hiding attendees also omits organizers. Hiding takes precedence over editing or overriding a field. |
+| `force-status` | Sets the status to `TENTATIVE`, `CONFIRMED`, or `CANCELLED`. |
+| `availability` | Sets availability to `OPAQUE` (Busy) or `TRANSPARENT` (Free). |
+| `event-url` | Sets the same HTTP or HTTPS link for every event. |
+| `published-ttl` | Sets `X-PUBLISHED-TTL` to a positive iCalendar duration, such as `PT30M`. The calendar app decides when to fetch the feed again. |
+| `forcetimezone` | Sets an IANA time zone while preserving local clock times. All-day events keep their dates. The output also sets `X-WR-TIMEZONE` to the target zone. |
+| `view=source`, `view=raw` | Return the original source file and the updated ICS as plain text, respectively. By default, CalTune returns `text/calendar`. |
 
-Gebruik voor titels of beschrijvingen maximaal twaalf paren van zoek- en vervangtekst. CalTune koppelt herhaalde parameters op volgorde en voert de regels hoofdlettergevoelig uit. Een lege vervangtekst verwijdert de gevonden tekst. Voor- en achtervoegsels worden daarna toegevoegd.
+Use up to twelve find-and-replace pairs for titles or descriptions. CalTune pairs repeated parameters in order and applies the rules case-sensitively. An empty replacement removes the matching text. Prefixes and suffixes are added afterward.
 
-Bij een datumbereik worden afzonderlijke herhalingen beoordeeld. Met een eindgrens legt CalTune de overgebleven herhalingen vast als `RDATE`. Zonder eindgrens blijft de herhaalregel actief en worden eerdere datums uitgesloten. Uitzonderingen met `RANGE=THISANDFUTURE` kunnen via **Keep recurring series unchanged** worden behouden.
+Date ranges are applied to individual occurrences. With an upper bound, CalTune records the remaining occurrences as `RDATE` values. With an open-ended range, the recurrence rule stays active and earlier dates are excluded. Use **Keep recurring series unchanged** to preserve exceptions with `RANGE=THISANDFUTURE`.
 
-De uitvoer vermeldt CalTune als producent in `PRODID` en bewaart een aanwezige bronwaarde in `X-CALTUNE-ORIG-PRODID`. Herhaalregels worden verwerkt met de meegeleverde [ical.js 2.2.1](https://github.com/kewisch/ical.js/tree/v2.2.1) onder de Mozilla Public License 2.0.
+The output identifies CalTune in `PRODID` and preserves the source value, if present, in `X-CALTUNE-ORIG-PRODID`. Recurrence rules are processed using the bundled [ical.js 2.2.1](https://github.com/kewisch/ical.js/tree/v2.2.1) under the Mozilla Public License 2.0.
 
-Het CalTune-logo en favicon worden bij de build opgenomen vanuit `worker/assets/`.
+The build includes the CalTune logo and favicon from `worker/assets/`.
